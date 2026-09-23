@@ -4,14 +4,35 @@ import { timingSafeEqual } from 'node:crypto';
 export const LOCALHOST_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
 export const MAX_BODY_BYTES = 256 * 1024;
 
-/** Reject anything not addressed to localhost, and any cross-origin request. */
-export function isLocalRequest(req: IncomingMessage): boolean {
-  const host = ((req.headers.host ?? '').split(':')[0] ?? '').replace(/^\[|\]$/g, '');
-  if (host && !LOCALHOST_HOSTS.has(host) && !LOCALHOST_HOSTS.has(`[${host}]`)) return false;
+const NO_EXTRA_HOSTS: ReadonlySet<string> = new Set();
+
+/** The hostname a Host header names (IPv6 keeps its brackets), or '' if missing or malformed. */
+function hostnameOf(value: string | undefined): string {
+  if (!value || /[\s@/\\?#]/.test(value)) return '';
+  try {
+    return new URL(`http://${value}`).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Reject anything not addressed to localhost or an explicitly allowed host (a
+ * cloud deployment's public domain), and any request from another origin —
+ * so a DNS-rebinding page can't reach the console under a hostname we didn't pick.
+ * A missing or malformed Host is refused too, so the allow-list can't be skipped.
+ */
+export function isAllowedHostRequest(
+  req: IncomingMessage,
+  allowedHosts: ReadonlySet<string> = NO_EXTRA_HOSTS,
+): boolean {
+  const isAllowed = (h: string): boolean => LOCALHOST_HOSTS.has(h) || allowedHosts.has(h);
+  const host = hostnameOf(req.headers.host);
+  if (!host || !isAllowed(host)) return false;
   const origin = req.headers.origin;
   if (origin) {
     try {
-      if (!LOCALHOST_HOSTS.has(new URL(origin).hostname)) return false;
+      if (!isAllowed(new URL(origin).hostname)) return false;
     } catch {
       return false;
     }

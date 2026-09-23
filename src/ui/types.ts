@@ -41,6 +41,10 @@ export interface UiServerDeps {
   host?: string;
   /** Bind port; 0 (default) picks an ephemeral port. */
   port?: number;
+  /** Pinned console token; default is a random per-process token. */
+  token?: string;
+  /** Hostnames accepted in Host/Origin besides localhost (a deployment's public domain). */
+  allowedHosts?: string[];
   /** Anthropic key check; defaults to a live `GET /v1/models`. Injected by tests. */
   validateAnthropicApiKey?: AnthropicKeyValidator;
   /** Claude login check; defaults to `claude auth status`. Injected by tests. */

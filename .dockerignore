@@ -1,0 +1,17 @@
+node_modules
+dist
+web/dist
+src/ui/generated
+.git
+.corepack
+coverage
+tests
+tests-smoke
+scripts
+*.log
+*.tsbuildinfo
+.env
+.env.*
+*.env
+.npmrc
+.DS_Store

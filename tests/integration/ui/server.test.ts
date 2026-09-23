@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -338,5 +339,62 @@ describe('ui server anthropic account routes', () => {
 
     expect((await post('/api/anthropic/connect', handle.token, { apiKey: KEY })).status).toBe(400);
     expect((await post('/api/anthropic/disconnect', handle.token, {})).status).toBe(400);
+  });
+});
+
+describe('ui server behind a public domain (cloud deployment)', () => {
+  const PINNED = 'p'.repeat(64);
+  const DOMAIN = 'bridge.up.railway.app';
+
+  // fetch() won't set a custom Host header; a raw request can, like the platform proxy does.
+  function statusFor(port: number, path: string, headers: Record<string, string>): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, path, headers }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  async function restartExposed(): Promise<void> {
+    await handle.close();
+    handle = await startUiServer({
+      supervisor: stubSupervisor(),
+      version: 'test',
+      rootDir,
+      token: PINNED,
+      allowedHosts: [DOMAIN.toUpperCase()],
+    });
+  }
+
+  it('uses the pinned token instead of minting one', async () => {
+    await restartExposed();
+
+    expect(handle.token).toBe(PINNED);
+    expect(
+      await statusFor(handle.port, '/api/status', { host: DOMAIN, 'x-ui-token': PINNED }),
+    ).toBe(200);
+    expect(
+      await statusFor(handle.port, '/api/status', { host: DOMAIN, 'x-ui-token': 'q'.repeat(64) }),
+    ).toBe(401);
+  });
+
+  it('accepts its public domain as Host and Origin, and nothing else', async () => {
+    await restartExposed();
+    const ok = { host: DOMAIN, origin: `https://${DOMAIN}`, 'x-ui-token': PINNED };
+
+    expect(await statusFor(handle.port, '/api/status', ok)).toBe(200);
+    expect(await statusFor(handle.port, '/api/status', { ...ok, host: 'evil.example.com' })).toBe(403);
+    expect(
+      await statusFor(handle.port, '/api/status', { ...ok, origin: 'https://evil.example.com' }),
+    ).toBe(403);
+  });
+
+  it('stays localhost-only when no public domain is configured', async () => {
+    expect(
+      await statusFor(handle.port, '/api/status', { host: DOMAIN, 'x-ui-token': handle.token }),
+    ).toBe(403);
   });
 });

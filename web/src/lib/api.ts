@@ -1,4 +1,30 @@
-const TOKEN = new URLSearchParams(location.search).get("token") ?? "";
+const TOKEN_KEY = "lark-bridge-ui-token";
+
+// The console link carries the token as `#token=` (a fragment never reaches the
+// server, so it stays out of proxy and access logs) or, for local links, `?token=`.
+// Keep it for this tab and strip it from the address bar so it isn't left in history.
+function takeToken(): string {
+  const query = new URLSearchParams(location.search);
+  const fromLink = new URLSearchParams(location.hash.slice(1)).get("token") ?? query.get("token");
+  if (!fromLink) {
+    try {
+      return sessionStorage.getItem(TOKEN_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  }
+  try {
+    sessionStorage.setItem(TOKEN_KEY, fromLink);
+  } catch {
+    // Storage blocked: the token still works for this page load.
+  }
+  query.delete("token");
+  const search = query.toString();
+  history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}`);
+  return fromLink;
+}
+
+const TOKEN = takeToken();
 
 export async function api<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {

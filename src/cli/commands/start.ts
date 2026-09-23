@@ -1,5 +1,6 @@
 import dns from 'node:dns';
 import os from 'node:os';
+import { dirname } from 'node:path';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { ClaudeAdapter } from '../../agent/claude/adapter';
@@ -12,7 +13,7 @@ import {
 import type { AgentAdapter } from '../../agent/types';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import type { Controls } from '../../commands';
-import type { AppPaths } from '../../config/app-paths';
+import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
 import {
   type AgentKind,
   type ProfileConfig,
@@ -45,7 +46,9 @@ import {
   type AcquiredRuntimeLock,
   type RuntimeLockMeta,
 } from '../../runtime/locks';
-import { resolveProfileRuntime } from '../../runtime/profile-runtime';
+import { resolveProfileRuntime, type ProfileRuntime } from '../../runtime/profile-runtime';
+import { shouldStartConsoleEmpty } from '../../runtime/console-start';
+import { resolveUiExposure, UI_TOKEN_ENV, type UiExposure } from '../../ui/exposure';
 import {
   assertReconnectAgentKindUnchanged,
   checkRuntimeAgentAvailability,
@@ -172,14 +175,9 @@ async function runClassic(opts: StartOptions): Promise<void> {
  * running control plane and prints its URL instead of launching a duplicate.
  */
 async function runSupervisorConsole(opts: StartOptions): Promise<void> {
-  const runtime = await resolveProfileRuntime({
-    ...opts,
-    allowBootstrap: true,
-    handleActiveBridgeMigrationConflict: migrationConflictHandler,
-  });
-  const cfg = runtime.cfg;
-  const configPath = runtime.configPath;
-  const appPaths = runtime.appPaths;
+  // Fail fast on a bad cloud config (e.g. a public bind host without a token).
+  const exposure = resolveUiExposure();
+  const { cfg, configPath, appPaths } = await resolveConsoleStart(opts);
   configureLogger({ logsDir: appPaths.hostLogsDir });
 
   // One supervisor per machine. If one is already running, print its console
@@ -197,8 +195,8 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
 
   await loadTelemetryAdapter({
     version: pkg.version,
-    appId: cfg.accounts.app.id,
-    tenant: cfg.accounts.app.tenant,
+    appId: cfg?.accounts.app.id,
+    tenant: cfg?.accounts.app.tenant,
     hostname: os.hostname(),
   });
   await gcOldLogs();
@@ -208,11 +206,27 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   // Single web console (host sidecar), backed by the supervisor.
   let uiServer: UiServerHandle | undefined;
   try {
-    uiServer = await startUiServer({ supervisor, version: pkg.version, rootDir: appPaths.rootDir });
+    uiServer = await startUiServer({
+      supervisor,
+      version: pkg.version,
+      rootDir: appPaths.rootDir,
+      host: exposure.host,
+      port: exposure.port,
+      token: exposure.token,
+      allowedHosts: exposure.allowedHosts,
+    });
     await writeUiSidecar(appPaths.hostUiFile, uiServer, new Date().toISOString());
-    console.log(`✓ 控制台：${uiServer.url}`);
+    console.log(`✓ 控制台：${consoleLink(uiServer, exposure)}`);
   } catch (err) {
+    // With no bot yet the console is the only way in; without it there is nothing to run.
+    if (!cfg) throw err;
     log.warn('ui', 'server-start-failed', { err: String(err) });
+  }
+
+  if (!cfg) {
+    console.log('还没有 bot：打开控制台，扫码创建第一个 bot。');
+    await parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
+    return;
   }
 
   // Auto-start only the active profile; others start on demand from the console.
@@ -227,6 +241,44 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   }
 
   await parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
+}
+
+interface ConsoleStart {
+  configPath: string;
+  appPaths: AppPaths;
+  /** Undefined → no bot yet; the console's onboarding wizard creates the first one. */
+  cfg?: ProfileRuntime['cfg'];
+}
+
+/**
+ * Resolve what the console starts with. A container has no terminal for the QR
+ * bootstrap, so with no config it starts empty (see `shouldStartConsoleEmpty`);
+ * otherwise the active profile is resolved/bootstrapped as it always was.
+ */
+async function resolveConsoleStart(opts: StartOptions): Promise<ConsoleStart> {
+  const appPaths = resolveAppPaths({ rootDir: opts.config ? dirname(opts.config) : undefined });
+  const configPath = opts.config ?? appPaths.configFile;
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+  if (await shouldStartConsoleEmpty({ configPath, appId: opts.appId, interactive })) {
+    return { configPath, appPaths };
+  }
+  const runtime = await resolveProfileRuntime({
+    ...opts,
+    allowBootstrap: true,
+    handleActiveBridgeMigrationConflict: migrationConflictHandler,
+  });
+  return { cfg: runtime.cfg, configPath: runtime.configPath, appPaths: runtime.appPaths };
+}
+
+/**
+ * The console link to print. A pinned token stays out of the logs (it lives in
+ * the deployment's env) and goes in the fragment, which browsers never send to
+ * the server; a random one is only usable through the printed link.
+ */
+function consoleLink(ui: UiServerHandle, exposure: UiExposure): string {
+  if (!exposure.token) return ui.url;
+  const base = exposure.publicUrl ?? `http://127.0.0.1:${ui.port}/`;
+  return `${base}#token=<${UI_TOKEN_ENV}>`;
 }
 
 /**

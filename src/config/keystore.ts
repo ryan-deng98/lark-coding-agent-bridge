@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, pbkdf2Sync, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { hostname, userInfo } from 'node:os';
 import type { AppPaths } from './app-paths';
@@ -13,12 +13,21 @@ import { writeFileAtomic } from '../platform/atomic-write';
  *   ~/.lark-channel/.keystore.salt   — 32 random bytes, generated once
  *
  * Both files are chmod 0600. The encryption key is derived (PBKDF2-SHA256,
- * 100k iters) from `hostname + userInfo().username + salt`. This is
+ * 100k iters) from `hostname + userInfo().username + salt`, or from
+ * `LARK_CHANNEL_KEYSTORE_SECRET + salt` when that is set. This is
  * **defense-in-depth against accidental disclosure** (backups, git commits,
  * log dumps) — *not* against a same-user process actively decrypting. That
  * threat needs a real OS keychain, which is out of scope for this bridge
  * given lark-cli already terminates secrets in its own keychain on bind.
  */
+
+/**
+ * Key seed for hosts whose hostname isn't stable. A container platform
+ * (Railway, Docker) gives every deployment a new hostname, which would orphan
+ * every secret written by the previous one.
+ */
+export const KEYSTORE_SECRET_ENV = 'LARK_CHANNEL_KEYSTORE_SECRET';
+const MIN_KEYSTORE_SECRET_LEN = 32;
 
 const KEY_LEN = 32;
 const IV_LEN = 12; // GCM standard
@@ -83,12 +92,27 @@ async function loadOrCreateSalt(storePaths: KeystorePaths = paths): Promise<Buff
   return salt;
 }
 
+/** The key seed: the configured secret, else this host's identity. */
+function keySeed(): string {
+  // Trimmed: a pasted value's trailing newline must not change the key.
+  const configured = process.env[KEYSTORE_SECRET_ENV]?.trim();
+  if (!configured) return `${hostname()}|${userInfo().username}`;
+  if (configured.length < MIN_KEYSTORE_SECRET_LEN) {
+    throw new Error(
+      `${KEYSTORE_SECRET_ENV} must be at least ${MIN_KEYSTORE_SECRET_LEN} characters ` +
+        '(generate one with `openssl rand -hex 32`)',
+    );
+  }
+  return configured;
+}
+
 async function deriveKey(storePaths: KeystorePaths = paths): Promise<Buffer> {
-  const cacheKey = `${storePaths.keystoreSaltFile}`;
+  const seed = keySeed();
+  // Keyed by the seed as well, so a changed seed never reuses a stale key.
+  const cacheKey = `${storePaths.keystoreSaltFile}|${createHash('sha256').update(seed).digest('hex')}`;
   const cached = derivedKeyCache.get(cacheKey);
   if (cached) return cached;
   const salt = await loadOrCreateSalt(storePaths);
-  const seed = `${hostname()}|${userInfo().username}`;
   const key = pbkdf2Sync(seed, salt, PBKDF2_ITER, KEY_LEN, 'sha256');
   derivedKeyCache.set(cacheKey, key);
   return key;
@@ -129,7 +153,14 @@ export async function getSecret(
   const env = store.entries[id];
   if (!env) return undefined;
   const key = await deriveKey(storePaths);
-  return decrypt(key, env);
+  try {
+    return decrypt(key, env);
+  } catch (err) {
+    throw new Error(
+      `cannot decrypt keystore entry "${id}": the key seed differs from the one it was written with ` +
+        `(hostname or user changed, or ${KEYSTORE_SECRET_ENV} was set/changed): ${(err as Error).message}`,
+    );
+  }
 }
 
 /** Store / overwrite the secret for `id`. */

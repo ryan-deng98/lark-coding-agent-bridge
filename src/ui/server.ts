@@ -36,7 +36,7 @@ import { finishQrRegistration, qrStatus, startQrRegistration } from './qr-regist
 import {
   checkToken,
   HttpError,
-  isLocalRequest,
+  isAllowedHostRequest,
   readJsonBody,
   sendHtml,
   sendJson,
@@ -49,15 +49,18 @@ const DEFAULT_HOST = '127.0.0.1';
 /**
  * Start the supervisor's single management console. Binds 127.0.0.1, mints a
  * random per-process token gating every `/api/*` call, rejects non-localhost /
- * cross-origin. Backed by the supervisor: it can list/start/stop/configure any
- * profile in-process (online → live; offline → written to disk).
+ * cross-origin. A cloud deployment passes its bind host, a pinned token and its
+ * public domain instead (see `resolveUiExposure`). Backed by the supervisor: it
+ * can list/start/stop/configure any profile in-process (online → live; offline
+ * → written to disk).
  */
 export async function startUiServer(deps: UiServerDeps): Promise<UiServerHandle> {
   const host = deps.host ?? DEFAULT_HOST;
-  const token = randomBytes(32).toString('hex');
+  const token = deps.token ?? randomBytes(32).toString('hex');
+  const allowedHosts: ReadonlySet<string> = new Set(deps.allowedHosts?.map((h) => h.toLowerCase()));
 
   const server = createServer((req, res) => {
-    handle(req, res, deps, token).catch((err) => {
+    handle(req, res, deps, token, allowedHosts).catch((err) => {
       log.warn('ui', 'request-failed', { err: String(err) });
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });
       else res.end();
@@ -85,8 +88,9 @@ async function handle(
   res: ServerResponse,
   deps: UiServerDeps,
   token: string,
+  allowedHosts: ReadonlySet<string>,
 ): Promise<void> {
-  if (!isLocalRequest(req)) {
+  if (!isAllowedHostRequest(req, allowedHosts)) {
     sendJson(res, 403, { error: 'forbidden' });
     return;
   }

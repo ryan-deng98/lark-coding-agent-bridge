@@ -12,6 +12,8 @@ web/dist/
 .env
 .env.local
 .env.*.local
+# e.g. bridge.env for a local Docker run: holds the keystore secret + console token
+*.env
 .npmrc
 
 .DS_Store

@@ -1,0 +1,9 @@
+# Railway: build the Dockerfile and run a single replica (the /data volume
+# allows only one). See docs/deploy-railway.md for the volume and variables.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# The bots are long-lived connections: bring the supervisor back on any exit.
+restartPolicyType = "ALWAYS"
