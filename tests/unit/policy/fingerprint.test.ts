@@ -47,6 +47,15 @@ describe('policy fingerprint', () => {
     }
   });
 
+  it('separates Claude login dirs without changing fingerprints that have none', () => {
+    const base = baseInput();
+    const botA = policyFingerprint({ ...base, claudeConfigDir: '/state/bot-a/claude-code' });
+
+    expect(policyFingerprint({ ...base, claudeConfigDir: undefined })).toBe(policyFingerprint(base));
+    expect(botA).not.toBe(policyFingerprint(base));
+    expect(botA).not.toBe(policyFingerprint({ ...base, claudeConfigDir: '/state/bot-b/claude-code' }));
+  });
+
   it('ignores runtime owner, timestamp, model, and concrete attachment names or sizes', () => {
     const base = baseInput();
 

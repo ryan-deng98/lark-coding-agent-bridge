@@ -95,6 +95,43 @@ describe('agent-aware run-flow resume', () => {
     });
   });
 
+  it('starts fresh instead of resuming a Claude session from another login dir', async () => {
+    const h = await createHarness('claude');
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    h.sessions.set('chat-1', 'host-login-session', cwdRealpath);
+
+    const run = await start(withClaudeLogin(h, '/state/bot/claude-code'));
+
+    expect(run.ok).toBe(true);
+    if (!run.ok) throw new Error('expected fresh run');
+    expect(run.resumeFrom).toBeUndefined();
+    expect(h.agent.runOptions[0]).toMatchObject({ sessionId: undefined });
+    expect(h.sessions.getRaw('chat-1')?.sessionId).toBeUndefined();
+  });
+
+  it('resumes and records Claude sessions under the same login dir', async () => {
+    const h = withClaudeLogin(await createHarness('claude'), '/state/bot/claude-code');
+    const cwdRealpath = await realpath(h.tmp.workspace);
+    h.sessions.set('chat-1', 'bot-session', cwdRealpath, '/state/bot/claude-code');
+
+    const run = await start(h);
+    expect(run.ok).toBe(true);
+    if (!run.ok) throw new Error('expected resumed run');
+    expect(run.resumeFrom).toBe('bot-session');
+
+    recordRunSessionEvent({
+      scopeId: 'chat-1',
+      sessions: h.sessions,
+      capability: claudeCapability(h.profileConfig),
+      policy: run.policy,
+      event: { type: 'system', sessionId: 'bot-session-2' },
+    });
+    expect(h.sessions.getRaw('chat-1')).toMatchObject({
+      sessionId: 'bot-session-2',
+      claudeConfigDir: '/state/bot/claude-code',
+    });
+  });
+
   it('does not resume when the policy fingerprint changes', async () => {
     const h = await createHarness('claude');
     const first = await start(h);
@@ -229,6 +266,10 @@ async function createHarness(agentKind: 'claude' | 'codex'): Promise<{
       },
     },
   };
+}
+
+function withClaudeLogin<T extends { profileConfig: ProfileConfig }>(h: T, claudeConfigDir: string): T {
+  return { ...h, profileConfig: { ...h.profileConfig, anthropic: { mode: 'claude-login', claudeConfigDir } } };
 }
 
 async function collect(events: AsyncIterable<unknown>): Promise<void> {

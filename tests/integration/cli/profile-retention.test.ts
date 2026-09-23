@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ANTHROPIC_API_KEY_SECRET_ID } from '../../../src/config/anthropic-account';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { clearKeystoreDerivedKeyCache, setSecret } from '../../../src/config/keystore';
 import {
@@ -239,6 +240,34 @@ describe('profile retention and export', () => {
     expect(JSON.stringify(safeExport)).not.toContain(exportedSecret);
     expect(safeExport.profiles.claude?.accounts.app.secret).toBe('[REDACTED]');
     expect(secretExport.profiles.claude?.accounts.app.secret).toBe(exportedSecret);
+  });
+
+  it('keeps the Anthropic key out of safe exports and materializes it only with secrets', async () => {
+    const root = await makeRoot();
+    await writeProfiles(root, 'claude', ['claude']);
+    const anthropicKey = `sk-ant-api03-${'k'.repeat(40)}EXPT`;
+    const account = { keyHint: 'sk-ant-…EXPT', connectedAt: '2026-09-23T00:00:00.000Z' };
+    const rootConfig = await readRoot(root);
+    rootConfig.profiles.claude!.anthropic = account;
+    await writeJson(join(root, 'config.json'), rootConfig);
+    await setSecret(ANTHROPIC_API_KEY_SECRET_ID, anthropicKey, resolveAppPaths({ rootDir: root, profile: 'claude' }));
+    const lines: string[] = [];
+    vi.spyOn(console, 'log').mockImplementation((line: string) => lines.push(line));
+
+    await runProfileExport('claude', { rootDir: root });
+    const safeExport = JSON.parse(lines.pop() ?? '') as RootConfig;
+    await runProfileExport('claude', { rootDir: root, includeSecrets: true, yes: true });
+    const secretExport = JSON.parse(lines.pop() ?? '') as RootConfig;
+
+    expect(JSON.stringify(safeExport)).not.toContain(anthropicKey);
+    expect(safeExport.profiles.claude?.anthropic).toEqual(account);
+    expect(secretExport.profiles.claude?.anthropic).toEqual({ ...account, apiKey: anthropicKey });
+
+    // A headless (injected) key form is stripped from safe exports as well.
+    rootConfig.profiles.claude!.anthropic = { apiKey: anthropicKey };
+    await writeJson(join(root, 'config.json'), rootConfig);
+    await runProfileExport('claude', { rootDir: root });
+    expect(lines.pop()).not.toContain(anthropicKey);
   });
 
   it('writes exports to a new output file and requires --force when it already exists', async () => {

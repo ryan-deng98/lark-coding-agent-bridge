@@ -1,8 +1,9 @@
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeAdapter } from '../../src/agent/claude/adapter.js';
+import { buildAnthropicAuthEnv, buildClaudeLoginEnv } from '../../src/agent/claude/anthropic-env.js';
 import type { AgentEvent } from '../../src/agent/types.js';
 
 interface FakeBinary {
@@ -101,6 +102,74 @@ describe('ClaudeAdapter process contract', () => {
       LARK_CHANNEL_CONFIG: larkCliSourceConfigFile,
       LARKSUITE_CLI_CONFIG_DIR: larkCliConfigDir,
     });
+  });
+
+  it('runs on the profile Anthropic key instead of the host credentials', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-own-key' }],
+    });
+    cleanup.push(fake.dir);
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'host-gateway-token');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://proxy.example.com');
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
+    try {
+      const run = new ClaudeAdapter({
+        binary: fake.path,
+        authEnv: buildAnthropicAuthEnv('sk-ant-api03-profile'),
+      }).run({ runId: 'run-own-key', prompt: 'hi', cwd: fake.dir });
+      await collect(run.events);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const { env } = await readRecord(fake.recordPath);
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-ant-api03-profile');
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBeUndefined();
+    expect(env.LARK_CHANNEL).toBe('1');
+  });
+
+  it("runs on the bot's own Claude login instead of any host credential", async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-own-login' }],
+    });
+    cleanup.push(fake.dir);
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-host');
+    try {
+      const run = new ClaudeAdapter({
+        binary: fake.path,
+        authEnv: buildClaudeLoginEnv('/state/bot/claude-code'),
+      }).run({ runId: 'run-own-login', prompt: 'hi', cwd: fake.dir });
+      await collect(run.events);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const { env } = await readRecord(fake.recordPath);
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/state/bot/claude-code');
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  it('leaves the host credentials alone when the profile has no Anthropic account', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-host-login' }],
+    });
+    cleanup.push(fake.dir);
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://proxy.example.com');
+    try {
+      const run = new ClaudeAdapter({ binary: fake.path }).run({
+        runId: 'run-host-login',
+        prompt: 'hi',
+        cwd: fake.dir,
+      });
+      await collect(run.events);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const { env } = await readRecord(fake.recordPath);
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://proxy.example.com');
   });
 
   it('passes resume and model after the base CLI contract', async () => {
@@ -249,6 +318,11 @@ async function createFakeClaude(options: {
       '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
+      '      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,',
+      '      ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,',
+      '      ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,',
+      '      CLAUDE_CODE_USE_BEDROCK: process.env.CLAUDE_CODE_USE_BEDROCK,',
+      '      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,',
       '    },',
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
@@ -263,7 +337,7 @@ async function createFakeClaude(options: {
   return { path, dir, recordPath };
 }
 
-async function readRecord(path: string): Promise<{
+interface FakeRecord {
   argv: string[];
   stdin: string;
   systemPrompt: string | null;
@@ -274,19 +348,14 @@ async function readRecord(path: string): Promise<{
     LARK_CHANNEL_HOME?: string;
     LARK_CHANNEL_CONFIG?: string;
     LARKSUITE_CLI_CONFIG_DIR?: string;
+    ANTHROPIC_API_KEY?: string;
+    ANTHROPIC_AUTH_TOKEN?: string;
+    ANTHROPIC_BASE_URL?: string;
+    CLAUDE_CODE_USE_BEDROCK?: string;
+    CLAUDE_CONFIG_DIR?: string;
   };
-}> {
-  return JSON.parse(await readFile(path, 'utf8')) as {
-    argv: string[];
-    stdin: string;
-    systemPrompt: string | null;
-    cwd: string;
-    env: {
-      LARK_CHANNEL?: string;
-      LARK_CHANNEL_PROFILE?: string;
-      LARK_CHANNEL_HOME?: string;
-      LARK_CHANNEL_CONFIG?: string;
-      LARKSUITE_CLI_CONFIG_DIR?: string;
-    };
-  };
+}
+
+async function readRecord(path: string): Promise<FakeRecord> {
+  return JSON.parse(await readFile(path, 'utf8')) as FakeRecord;
 }

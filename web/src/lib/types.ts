@@ -30,6 +30,21 @@ export interface ProfileInfo {
   running: boolean;
 }
 
+/** A Claude bot's own Anthropic account (never carries the key itself). */
+export interface AnthropicAccount {
+  connected: boolean;
+  /** "claude-login" = the bot's own Claude Code login; absent = API key. */
+  mode?: "claude-login";
+  keyHint?: string;
+  accountHint?: string;
+  connectedAt?: string;
+  /** The command that signs this bot's own Claude Code dir in. */
+  loginCommand?: string;
+  /** Set on connect/disconnect: whether the running bot was restarted onto it. */
+  restarted?: boolean;
+  restartError?: string;
+}
+
 export interface ModelOption {
   value: string;
   label: string;

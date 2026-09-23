@@ -1,10 +1,19 @@
 import { ClaudeAdapter } from '../agent/claude/adapter';
+import { buildAnthropicAuthEnv, buildClaudeLoginEnv } from '../agent/claude/anthropic-env';
 import { CodexAdapter } from '../agent/codex/adapter';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
+import { resolveAnthropicApiKey } from '../config/anthropic-account';
 import type { AppPaths } from '../config/app-paths';
-import type { AgentKind, ProfileConfig } from '../config/profile-schema';
+import type { KeystorePaths } from '../config/keystore';
+import { claudeLoginConfigDir, type AgentKind, type ProfileConfig } from '../config/profile-schema';
+import type { AppConfig } from '../config/schema';
 import type { AcquiredRuntimeLock } from './locks';
+
+export interface RuntimeAgentOptions {
+  /** Claude only: env that pins the bot's own Anthropic key (see {@link resolveRuntimeAgentAuthEnv}). */
+  claudeAuthEnv?: NodeJS.ProcessEnv;
+}
 
 /**
  * Build the agent adapter for a profile, wiring its per-profile lark-channel env
@@ -19,6 +28,7 @@ export function createRuntimeAgent(
     Partial<Pick<AppPaths, 'rootDir' | 'profile' | 'configFile' | 'larkCliConfigDir' | 'larkCliSourceConfigFile'>> & {
       configPath?: string;
     },
+  opts: RuntimeAgentOptions = {},
 ): AgentAdapter {
   const larkChannelConfigPath = appPaths.configPath ?? appPaths.configFile;
   const larkChannel =
@@ -49,7 +59,24 @@ export function createRuntimeAgent(
       larkChannel,
     });
   }
-  return new ClaudeAdapter({ larkChannel });
+  return new ClaudeAdapter({ larkChannel, ...(opts.claudeAuthEnv ? { authEnv: opts.claudeAuthEnv } : {}) });
+}
+
+/**
+ * Resolve the env a profile's Claude runs need for its own Anthropic account;
+ * undefined keeps the host's `claude` login. Throws when a connected account's
+ * key can't be read, so the profile fails to start instead of quietly running
+ * on someone else's login.
+ */
+export async function resolveRuntimeAgentAuthEnv(
+  profileConfig: ProfileConfig,
+  cfg: Pick<AppConfig, 'secrets'>,
+  secretPaths: KeystorePaths,
+): Promise<NodeJS.ProcessEnv | undefined> {
+  const loginDir = claudeLoginConfigDir(profileConfig);
+  if (loginDir) return buildClaudeLoginEnv(loginDir);
+  const apiKey = await resolveAnthropicApiKey(profileConfig, { secrets: cfg.secrets, secretPaths });
+  return apiKey ? buildAnthropicAuthEnv(apiKey) : undefined;
 }
 
 export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {

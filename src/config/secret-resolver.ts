@@ -36,20 +36,44 @@ export async function resolveAppSecret(
 ): Promise<string> {
   const appId = cfg.accounts.app.id;
   const secret = cfg.accounts.app.secret;
-  return resolveSecretInput(secret, cfg.secrets, appId, secretPaths);
+  return resolveSecretInput(secret, cfg.secrets, secretPaths, {
+    label: 'app secret',
+    fallbackKeystoreId: secretKeyForApp(appId),
+  });
+}
+
+/**
+ * Resolve any other secret field (e.g. a bot's Anthropic API key) with the same
+ * forms as the App Secret. Unlike {@link resolveAppSecret}, a missing keystore
+ * entry is an error: falling back to `app-<appId>` would hand the Lark App
+ * Secret to whichever service asked for this one.
+ */
+export async function resolveSecret(
+  input: SecretInput,
+  secretsCfg: AppConfig['secrets'],
+  secretPaths: KeystorePaths = paths,
+): Promise<string> {
+  return resolveSecretInput(input, secretsCfg, secretPaths, { label: 'secret' });
+}
+
+interface ResolveSecretOptions {
+  /** Used in error messages. */
+  label: string;
+  /** Keystore id to try when an exec ref's own id is missing (App Secret only). */
+  fallbackKeystoreId?: string;
 }
 
 async function resolveSecretInput(
   input: SecretInput,
   secretsCfg: AppConfig['secrets'],
-  appId: string,
   secretPaths: KeystorePaths,
+  opts: ResolveSecretOptions,
 ): Promise<string> {
   if (!input) {
-    throw new Error('app secret is missing');
+    throw new Error(`${opts.label} is missing`);
   }
   if (typeof input === 'string') {
-    return resolvePlainOrTemplate(input);
+    return resolvePlainOrTemplate(input, opts.label);
   }
   if (!isSecretRef(input)) {
     throw new Error(`unsupported secret form: ${JSON.stringify(input)}`);
@@ -60,19 +84,19 @@ async function resolveSecretInput(
     case 'file':
       return resolveFileRef(input, lookupProvider(secretsCfg, input));
     case 'exec':
-      return resolveExecRef(input, lookupProvider(secretsCfg, input), appId, secretPaths);
+      return resolveExecRef(input, lookupProvider(secretsCfg, input), opts.fallbackKeystoreId, secretPaths);
     default:
       throw new Error(`unknown secret source: ${(input as { source?: string }).source}`);
   }
 }
 
-function resolvePlainOrTemplate(value: string): string {
-  if (!value) throw new Error('app secret is empty');
+function resolvePlainOrTemplate(value: string, label: string): string {
+  if (!value) throw new Error(`${label} is empty`);
   const m = ENV_TEMPLATE_RE.exec(value);
   if (m) {
     const name = m[1] as string;
     const v = process.env[name];
-    if (!v) throw new Error(`env var ${name} referenced by secret is not set`);
+    if (!v) throw new Error(`env var ${name} referenced by ${label} is not set`);
     return v;
   }
   return value;
@@ -118,7 +142,7 @@ async function resolveFileRef(ref: SecretRef, pc: ProviderConfig | undefined): P
 async function resolveExecRef(
   ref: SecretRef,
   pc: ProviderConfig | undefined,
-  appId: string,
+  fallbackKeystoreId: string | undefined,
   secretPaths: KeystorePaths,
 ): Promise<string> {
   if (!pc?.command) {
@@ -126,15 +150,15 @@ async function resolveExecRef(
   }
 
   if (isSelfBridgeCommand(pc.command, pc.args)) {
-    // Short-circuit: read keystore directly. The expected id under the
-    // bridge convention is `app-<appId>`; if the user wired something
-    // else, fall back to ref.id verbatim.
+    // Short-circuit: read keystore directly. For the App Secret the expected
+    // id under the bridge convention is `app-<appId>`; if the user wired
+    // something else, fall back to that conventional id.
     const candidate = await getSecret(ref.id, secretPaths);
     if (candidate !== undefined) return candidate;
-    const conventional = secretKeyForApp(appId);
-    const fallback = await getSecret(conventional, secretPaths);
+    if (!fallbackKeystoreId) throw new Error(`keystore has no entry for "${ref.id}"`);
+    const fallback = await getSecret(fallbackKeystoreId, secretPaths);
     if (fallback !== undefined) return fallback;
-    throw new Error(`keystore has no entry for "${ref.id}" or "${conventional}"`);
+    throw new Error(`keystore has no entry for "${ref.id}" or "${fallbackKeystoreId}"`);
   }
 
   return spawnExecProvider(pc, ref);

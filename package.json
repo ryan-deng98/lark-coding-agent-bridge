@@ -48,6 +48,7 @@
     "prepublishOnly": "pnpm typecheck && pnpm build"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
     "@clack/prompts": "^1.4.0",
     "@larksuite/channel": "^0.6.0",
     "commander": "^12.1.0",

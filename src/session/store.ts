@@ -9,6 +9,8 @@ export interface SessionEntry {
   sessionId?: string;
   /** Pinned cwd for the resumable session. Absent for the same reason. */
   cwd?: string;
+  /** Claude config dir the session lives in; absent = the host's default. */
+  claudeConfigDir?: string;
   updatedAt: number;
   /** Per-scope idle-timeout override (minutes). 0 = explicitly off for this
    * scope, undefined = follow global default. Session resets preserve this
@@ -41,6 +43,8 @@ export class SessionStore {
         // the full pair; but a bare timeout override is fine on its own.
         const sessionId = typeof entry.sessionId === 'string' ? entry.sessionId : undefined;
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
+        const claudeConfigDir =
+          typeof entry.claudeConfigDir === 'string' && entry.claudeConfigDir ? entry.claudeConfigDir : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
@@ -48,6 +52,7 @@ export class SessionStore {
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
+          ...(hasSession && claudeConfigDir ? { claudeConfigDir } : {}),
           updatedAt: entry.updatedAt,
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
         };
@@ -59,14 +64,16 @@ export class SessionStore {
   }
 
   /**
-   * Return the session id for this chat if it was created in the given cwd.
-   * Sessions recorded in a different cwd are stale — claude can't resume
-   * them from a different working directory.
+   * Return the session id for this chat if it was created in the given cwd
+   * and Claude config dir. Sessions recorded elsewhere are stale — claude can't
+   * resume them from a different working directory or a different config dir
+   * (a bot's own Claude login keeps its transcripts under its own dir).
    */
-  resumeFor(chatId: string, cwd: string): string | undefined {
+  resumeFor(chatId: string, cwd: string, claudeConfigDir?: string): string | undefined {
     const entry = this.data[chatId];
     if (!entry) return undefined;
     if (entry.cwd !== cwd) return undefined;
+    if ((entry.claudeConfigDir ?? '') !== (claudeConfigDir ?? '')) return undefined;
     return entry.sessionId;
   }
 
@@ -74,13 +81,14 @@ export class SessionStore {
     return this.data[chatId];
   }
 
-  set(chatId: string, sessionId: string, cwd: string): void {
+  set(chatId: string, sessionId: string, cwd: string, claudeConfigDir?: string): void {
     // Preserve idleTimeoutMinutes across run starts — it's a per-scope
     // preference, not per-run-instance state. /new (clear) wipes it.
     const prev = this.data[chatId];
     this.data[chatId] = {
       sessionId,
       cwd,
+      ...(claudeConfigDir ? { claudeConfigDir } : {}),
       updatedAt: Date.now(),
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }

@@ -4,6 +4,14 @@ import type { AddressInfo } from 'node:net';
 import { log } from '../core/logger';
 import { readActiveProfile } from '../config/profile-store';
 import type { MutableProfileState } from '../config/config-ops';
+import { checkClaudeLogin } from '../agent/claude/login-status';
+import {
+  AnthropicAccountError,
+  connectAnthropicAccount,
+  connectClaudeLogin,
+  disconnectAnthropicAccount,
+  readAnthropicAccount,
+} from '../config/anthropic-account';
 import consoleHtml from './generated/index.html';
 import {
   addBotToChatView,
@@ -34,7 +42,7 @@ import {
   sendJson,
 } from './http';
 import type { Controls } from '../commands';
-import type { UiServerDeps, UiServerHandle } from './types';
+import type { UiServerDeps, UiServerHandle, UiSupervisor } from './types';
 
 const DEFAULT_HOST = '127.0.0.1';
 
@@ -104,6 +112,41 @@ async function handle(
       return;
     }
     throw err;
+  }
+}
+
+/** Surface account refusals (bad key, wrong profile) as a 400 with their reason. */
+async function asBadRequest<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof AnthropicAccountError) throw new HttpError(400, err.message);
+    throw err;
+  }
+}
+
+function requireProfile(value: unknown): string {
+  const profile = typeof value === 'string' ? value.trim() : '';
+  if (!profile) throw new HttpError(400, 'profile is required');
+  return profile;
+}
+
+/**
+ * Apply an account change to a running bot — credentials are resolved only when
+ * a profile (re)starts. A failed restart is reported, not fatal: the change is
+ * already saved and applies on the next start.
+ */
+async function restartIfOnline(
+  sup: UiSupervisor,
+  profile: string,
+): Promise<{ restarted: boolean; restartError?: string }> {
+  if (!sup.isOnline(profile)) return { restarted: false };
+  try {
+    await sup.restartProfile(profile);
+    return { restarted: true };
+  } catch (err) {
+    log.warn('ui', 'anthropic-restart-failed', { profile, err: String(err) });
+    return { restarted: false, restartError: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -191,7 +234,13 @@ async function route(
     return;
   }
   if (path === '/api/profiles/qr/finish' && p) {
-    sendJson(res, 200, await finishQrRegistration(await readJsonBody(req), deps.rootDir));
+    sendJson(
+      res,
+      200,
+      await finishQrRegistration(await readJsonBody(req), deps.rootDir, {
+        validateAnthropicApiKey: deps.validateAnthropicApiKey,
+      }),
+    );
     return;
   }
   if (path === '/api/profiles' && p) {
@@ -200,6 +249,43 @@ async function route(
   }
   if (path === '/api/onboard/state' && g) {
     sendJson(res, 200, await onboardState(deps.rootDir));
+    return;
+  }
+
+  // --- the bot's own Anthropic account (Claude profiles) ---
+  if (path === '/api/anthropic' && g) {
+    const profile = url.searchParams.get('profile') ?? (await readActiveProfile(deps.rootDir));
+    if (!profile) throw new HttpError(400, 'no profile');
+    sendJson(res, 200, await asBadRequest(() => readAnthropicAccount(profile, deps.rootDir)));
+    return;
+  }
+  if (path === '/api/anthropic/connect' && p) {
+    const body = (await readJsonBody(req)) as { profile?: unknown; apiKey?: unknown };
+    const profile = requireProfile(body.profile);
+    const view = await asBadRequest(() =>
+      connectAnthropicAccount({ profile, apiKey: body.apiKey }, deps.rootDir, {
+        validate: deps.validateAnthropicApiKey,
+      }),
+    );
+    sendJson(res, 200, { ...view, ...(await restartIfOnline(sup, profile)) });
+    return;
+  }
+  if (path === '/api/anthropic/connect-login' && p) {
+    const body = (await readJsonBody(req)) as { profile?: unknown };
+    const profile = requireProfile(body.profile);
+    const view = await asBadRequest(() =>
+      connectClaudeLogin({ profile }, deps.rootDir, {
+        checkLogin: deps.checkClaudeLogin ?? ((dir) => checkClaudeLogin(dir)),
+      }),
+    );
+    sendJson(res, 200, { ...view, ...(await restartIfOnline(sup, profile)) });
+    return;
+  }
+  if (path === '/api/anthropic/disconnect' && p) {
+    const body = (await readJsonBody(req)) as { profile?: unknown };
+    const profile = requireProfile(body.profile);
+    const view = await asBadRequest(() => disconnectAnthropicAccount({ profile }, deps.rootDir));
+    sendJson(res, 200, { ...view, ...(await restartIfOnline(sup, profile)) });
     return;
   }
 

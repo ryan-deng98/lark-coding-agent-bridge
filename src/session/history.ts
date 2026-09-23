@@ -16,13 +16,20 @@ function encodeCwd(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
 
-function claudeProjectDir(cwd: string): string {
-  return join(homedir(), '.claude', 'projects', encodeCwd(cwd));
+function claudeProjectDir(cwd: string, claudeConfigDir?: string): string {
+  return join(claudeConfigDir ?? join(homedir(), '.claude'), 'projects', encodeCwd(cwd));
 }
 
-/** Return the most recent `limit` jsonl sessions for the given cwd, newest first. */
-export async function listRecentSessions(cwd: string, limit = 5): Promise<SessionSummary[]> {
-  const dir = claudeProjectDir(cwd);
+/**
+ * Return the most recent `limit` jsonl sessions for the given cwd, newest
+ * first. `claudeConfigDir` is a bot's own Claude login dir; default ~/.claude.
+ */
+export async function listRecentSessions(
+  cwd: string,
+  limit = 5,
+  claudeConfigDir?: string,
+): Promise<SessionSummary[]> {
+  const dir = claudeProjectDir(cwd, claudeConfigDir);
   let files: string[];
   try {
     files = await readdir(dir);

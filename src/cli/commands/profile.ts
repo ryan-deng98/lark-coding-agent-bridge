@@ -17,6 +17,7 @@ import {
 } from '../../config/profile-store';
 import type { RootConfig } from '../../config/profile-schema';
 import { resolveAppSecret } from '../../config/secret-resolver';
+import { resolveAnthropicApiKey } from '../../config/anthropic-account';
 import { writeFileAtomic } from '../../platform/atomic-write';
 import { acquireProfileRuntimeLock, checkRuntimeLock } from '../../runtime/locks';
 import { readAndPrune } from '../../runtime/registry';
@@ -237,10 +238,11 @@ export async function runProfileExport(
 
   const profile = cloneJson(selected);
   if (opts.includeSecrets) {
-    profile.accounts.app.secret = await resolveAppSecret(
-      runtimeProfileConfig(root, name),
-      resolveAppPaths({ rootDir, profile: name }),
-    );
+    const runtime = runtimeProfileConfig(root, name);
+    const secretPaths = resolveAppPaths({ rootDir, profile: name });
+    profile.accounts.app.secret = await resolveAppSecret(runtime, secretPaths);
+    const anthropicKey = await resolveAnthropicApiKey(profile, { secrets: runtime.secrets, secretPaths });
+    if (anthropicKey && profile.anthropic) profile.anthropic = { ...profile.anthropic, apiKey: anthropicKey };
   }
   const exportedBase: RootConfig = {
     schemaVersion: 2,
@@ -257,6 +259,9 @@ export async function runProfileExport(
   if (!opts.includeSecrets) {
     delete profile.secrets;
     profile.accounts.app.secret = '[REDACTED]';
+    // Keep the masked hint; an imported profile then asks to reconnect instead
+    // of running on a placeholder key.
+    if (profile.anthropic) delete profile.anthropic.apiKey;
   }
   const body = formatRootConfig(exported);
 

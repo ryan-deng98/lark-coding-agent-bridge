@@ -244,8 +244,8 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
         : undefined;
       const sessionId =
         canResumeAgentSession && capability.agentId === 'claude'
-          ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
-            sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
+          ? sessions.resumeFor(docSessionScopeId, cwdRealpath, policy.claudeConfigDir) ??
+            sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath, policy.claudeConfigDir)
           : undefined;
       const threadId = capability.agentId === 'codex' ? catalogEntry?.threadId : undefined;
       log.info('comment', 'session', {
@@ -329,7 +329,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
             event: e,
           });
           if (capability.agentId === 'claude' && e.type === 'system' && e.sessionId) {
-            sessions.set(docSessionScopeId, e.sessionId, policy.cwdRealpath);
+            sessions.set(docSessionScopeId, e.sessionId, policy.cwdRealpath, policy.claudeConfigDir);
           }
           switch (e.type) {
             case 'text':

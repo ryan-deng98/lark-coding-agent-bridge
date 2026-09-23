@@ -2,6 +2,7 @@ import type {
   AppCredentials,
   AppPreferences,
   MessageReplyMode,
+  SecretInput,
   SecretsConfig,
 } from './schema';
 import {
@@ -142,6 +143,40 @@ export interface LarkCliConfig {
   };
 }
 
+export type AnthropicAuthMode = 'api-key' | 'claude-login';
+
+/**
+ * The bot's own Anthropic account for Claude runs. Present = connected; absent
+ * = runs use the host's `claude` login. Two ways to connect:
+ *  - `api-key` (default): the key never lives here — by default it is the
+ *    profile keystore entry written by the web console, and `apiKey` lets
+ *    headless deployments inject it (`${ENV}` / env / file / exec). A literal
+ *    string in `apiKey` is stored unencrypted in config.json — prefer a reference.
+ *  - `claude-login`: the bot runs on its own Claude Code config dir, signed in
+ *    with the user's Claude account through `claude auth login`; the bridge
+ *    never sees that credential.
+ */
+export interface AnthropicAccountConfig {
+  mode?: AnthropicAuthMode;
+  apiKey?: SecretInput;
+  /** Non-secret display hint, e.g. `sk-ant-…WXYZ`. */
+  keyHint?: string;
+  /** claude-login: the bot's own Claude Code config dir (login, sessions, settings). */
+  claudeConfigDir?: string;
+  /** claude-login: audit-safe label of the signed-in account, e.g. `Acme · team`. */
+  accountHint?: string;
+  connectedAt?: string;
+}
+
+/** The bot's own Claude Code config dir when it signs in with its own Claude account. */
+export function claudeLoginConfigDir(
+  profile: Pick<ProfileConfig, 'agentKind' | 'anthropic'>,
+): string | undefined {
+  return profile.agentKind === 'claude' && profile.anthropic?.mode === 'claude-login'
+    ? profile.anthropic.claudeConfigDir
+    : undefined;
+}
+
 export interface ProfileConfig {
   schemaVersion: 2;
   agentKind: AgentKind;
@@ -150,6 +185,7 @@ export interface ProfileConfig {
   accounts: {
     app: AppCredentials;
   };
+  anthropic?: AnthropicAccountConfig;
   secrets?: SecretsConfig;
   preferences: Omit<AppPreferences, 'access' | 'requireMentionInGroup'>;
   access: ProfileAccess;
@@ -243,6 +279,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     comments?: unknown;
     meeting?: unknown;
     larkCli?: unknown;
+    anthropic?: unknown;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -270,12 +307,14 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const comments = normalizeComments(raw.comments);
   const meeting = normalizeMeeting(raw.meeting);
   const larkCli = normalizeLarkCli(raw.larkCli);
+  const anthropic = normalizeAnthropicAccount(raw.anthropic);
 
   return {
     schemaVersion: 2,
     agentKind: raw.agentKind,
     mode: raw.mode === 'team' ? 'team' : 'personal',
     accounts,
+    ...(anthropic ? { anthropic } : {}),
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     access,
@@ -393,6 +432,54 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
 
 function normalizeComments(_input: unknown): CommentConfig {
   return {};
+}
+
+function normalizeAnthropicAccount(input: unknown): AnthropicAccountConfig | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const raw = input as {
+    mode?: unknown;
+    apiKey?: unknown;
+    keyHint?: unknown;
+    claudeConfigDir?: unknown;
+    accountHint?: unknown;
+    connectedAt?: unknown;
+  };
+  const connectedAt = nonEmptyString(raw.connectedAt);
+  if (raw.mode === 'claude-login') {
+    const claudeConfigDir = nonEmptyString(raw.claudeConfigDir);
+    if (!claudeConfigDir) return undefined;
+    const accountHint = nonEmptyString(raw.accountHint);
+    return {
+      mode: 'claude-login',
+      claudeConfigDir,
+      ...(accountHint ? { accountHint } : {}),
+      ...(connectedAt ? { connectedAt } : {}),
+    };
+  }
+  const apiKey = normalizeSecretInput(raw.apiKey);
+  const keyHint = nonEmptyString(raw.keyHint);
+  return {
+    ...(apiKey ? { apiKey } : {}),
+    ...(keyHint ? { keyHint } : {}),
+    ...(connectedAt ? { connectedAt } : {}),
+  };
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+function normalizeSecretInput(value: unknown): SecretInput | undefined {
+  if (typeof value === 'string') return value.trim() ? value : undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const ref = value as { source?: unknown; provider?: unknown; id?: unknown };
+  if (ref.source !== 'env' && ref.source !== 'file' && ref.source !== 'exec') return undefined;
+  if (typeof ref.id !== 'string' || !ref.id) return undefined;
+  return {
+    source: ref.source,
+    id: ref.id,
+    ...(typeof ref.provider === 'string' && ref.provider ? { provider: ref.provider } : {}),
+  };
 }
 
 /** Defaults keep the in-meeting agent off until a profile opts in. */

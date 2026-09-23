@@ -41,7 +41,8 @@ import type {
   ProfileConfig,
   ProfileMode,
 } from '../config/profile-schema';
-import { effectiveLarkCliIdentity } from '../config/profile-schema';
+import { claudeLoginConfigDir, effectiveLarkCliIdentity } from '../config/profile-schema';
+import { anthropicAccountView } from '../config/anthropic-account';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
@@ -631,7 +632,12 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
         });
-        ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        ctx.sessions.set(
+          ctx.scope,
+          resolved.sessionId!,
+          ctx.sessionCatalogIdentity.cwdRealpath,
+          claudeLoginConfigDir(ctx.controls.profileConfig),
+        );
       }
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
@@ -647,7 +653,12 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     }
     ctx.activeRuns.interrupt(ctx.scope);
     if (ctx.sessionCatalogIdentity.agentId === 'claude') {
-      ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
+      ctx.sessions.set(
+        ctx.scope,
+        sessionId,
+        ctx.sessionCatalogIdentity.cwdRealpath,
+        claudeLoginConfigDir(ctx.controls.profileConfig),
+      );
     }
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
@@ -664,7 +675,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     return;
   }
   ctx.activeRuns.interrupt(ctx.scope);
-  ctx.sessions.set(ctx.scope, sessionId, cwd);
+  ctx.sessions.set(ctx.scope, sessionId, cwd, claudeLoginConfigDir(ctx.controls.profileConfig));
   await reply(ctx, RESUME_APPLIED_REPLY);
 }
 
@@ -718,8 +729,8 @@ async function listClaudeResumeHistory(
   cwd: string,
   limit: number,
 ): Promise<SessionSummary[]> {
-  const provider = ctx.claudeHistoryProvider ?? listRecentSessions;
-  return provider(cwd, limit);
+  if (ctx.claudeHistoryProvider) return ctx.claudeHistoryProvider(cwd, limit);
+  return listRecentSessions(cwd, limit, claudeLoginConfigDir(ctx.controls.profileConfig));
 }
 
 async function listCodexResumeHistory(
@@ -824,6 +835,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     emptySessionText: isCodex ? '(未建立)' : undefined,
     sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
+    anthropicAccount: anthropicAccountLabel(ctx.controls.profileConfig),
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
@@ -835,6 +847,17 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+/** `/status` line for Claude profiles: the bot's own Anthropic key, or the host login. */
+function anthropicAccountLabel(profile: ProfileConfig): string | undefined {
+  if (profile.agentKind !== 'claude') return undefined;
+  const account = anthropicAccountView(profile);
+  if (!account.connected) return '本机 claude 登录';
+  if (account.mode === 'claude-login') {
+    return account.accountHint ? `Claude 账号登录（${account.accountHint}）` : 'Claude 账号登录';
+  }
+  return account.keyHint ? `已连接 ${account.keyHint}` : '已连接';
 }
 
 function formatOwnerState(ctx: CommandContext): string {

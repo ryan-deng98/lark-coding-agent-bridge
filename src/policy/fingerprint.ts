@@ -10,6 +10,8 @@ export interface FingerprintInputV2 {
   attachmentPolicyShapeDigest: string;
   codexHome?: string;
   inheritCodexHome: boolean;
+  /** Claude-login bots keep sessions in their own config dir; can't resume across dirs. */
+  claudeConfigDir?: string;
 }
 
 export interface ResourceScopeDigestInput {
@@ -41,6 +43,8 @@ export function policyFingerprint(input: FingerprintInputV2): string {
     attachmentPolicyShapeDigest: input.attachmentPolicyShapeDigest,
     codexHome: input.codexHome ?? null,
     inheritCodexHome: input.inheritCodexHome,
+    // Only when set, so fingerprints of profiles without a Claude login don't change.
+    ...(input.claudeConfigDir ? { claudeConfigDir: input.claudeConfigDir } : {}),
   });
 }
 

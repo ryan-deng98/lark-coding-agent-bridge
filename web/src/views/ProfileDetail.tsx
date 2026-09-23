@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/sonner";
+import { AnthropicAccountCard } from "./AnthropicAccountCard";
 import { ConfigView } from "./ConfigView";
 
 function uptime(ms: number): string {
@@ -118,6 +119,9 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
           )}
         </CardContent>
       </Card>
+
+      {/* key: remount per profile so a slow response never lands on another profile's card */}
+      {info?.agentKind === "claude" && <AnthropicAccountCard key={profile} profile={profile} />}
 
       <ConfigView profile={profile} />
 

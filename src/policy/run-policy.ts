@@ -7,7 +7,7 @@ import {
   type ClaudePermissionMode,
   type CodexSandboxMode,
 } from '../config/permissions';
-import type { ProfileConfig } from '../config/profile-schema';
+import { claudeLoginConfigDir, type ProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from './access';
 import {
   accessPolicyDigest,
@@ -69,6 +69,8 @@ export interface RunPolicyAllow {
   attachments: AgentAttachment[];
   policyFingerprint: string;
   expiresAt: number;
+  /** Claude-login bots only: the config dir this run's sessions live in. */
+  claudeConfigDir?: string;
 }
 
 export interface RunPolicyReject {
@@ -127,6 +129,8 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
       ? 'comment-mention'
       : accessPolicyDigest(input.profileConfig.access);
 
+  const claudeConfigDir = claudeLoginConfigDir(input.profileConfig);
+
   return {
     ok: true,
     prompt: input.prompt,
@@ -146,7 +150,9 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
       attachmentPolicyShapeDigest: attachmentDigest,
       codexHome: input.codexHome,
       inheritCodexHome: input.inheritCodexHome ?? false,
+      claudeConfigDir,
     }),
+    ...(claudeConfigDir ? { claudeConfigDir } : {}),
   };
 }
 

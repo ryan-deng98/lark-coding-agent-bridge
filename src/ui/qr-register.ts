@@ -1,5 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { registerApp } from '@larksuite/channel';
+import {
+  AnthropicAccountError,
+  checkAnthropicApiKey,
+  storeAnthropicApiKey,
+  type AnthropicAccountView,
+  type AnthropicKeyValidator,
+} from '../config/anthropic-account';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig } from '../config/profile-store';
 import type { TenantBrand } from '../config/schema';
@@ -139,11 +146,23 @@ export function qrStatus(sessionId: string): {
   };
 }
 
-/** Write the profile once the app is created (status 'scanned'). Idempotent. */
+export interface QrFinishResult {
+  profile: string;
+  anthropic?: AnthropicAccountView;
+  /** The bot was created but a follow-up step failed; the user can retry it from the profile page. */
+  warning?: string;
+}
+
+/**
+ * Write the profile once the app is created (status 'scanned'). Idempotent.
+ * An optional `anthropicApiKey` connects a Claude bot to the user's own
+ * Anthropic account; it is checked before anything is written.
+ */
 export async function finishQrRegistration(
   body: unknown,
   rootDir?: string,
-): Promise<{ profile: string }> {
+  deps: { validateAnthropicApiKey?: AnthropicKeyValidator } = {},
+): Promise<QrFinishResult> {
   const fv = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   const sessionId = String(fv.sessionId ?? '');
   const s = sessions.get(sessionId);
@@ -154,6 +173,10 @@ export async function finishQrRegistration(
 
   const agentKind: AgentKind = fv.agentKind === 'codex' ? 'codex' : 'claude';
   const profile = String(fv.profile ?? '').trim() || s.suggestedProfile || agentKind;
+  const rawKey = typeof fv.anthropicApiKey === 'string' ? fv.anthropicApiKey.trim() : '';
+  const anthropicApiKey =
+    agentKind === 'claude' && rawKey ? await checkKeyOrBadRequest(rawKey, deps.validateAnthropicApiKey) : undefined;
+
   const created = await writeNewProfile(
     { profile, agentKind, appId: s.app.appId, appSecret: s.app.appSecret, tenant: s.app.tenant },
     rootDir,
@@ -161,5 +184,26 @@ export async function finishQrRegistration(
   s.status = 'done';
   s.profile = created.profile;
   s.app = undefined; // drop the secret from memory once persisted
-  return { profile: created.profile };
+  if (!anthropicApiKey) return { profile: created.profile };
+
+  try {
+    const anthropic = await storeAnthropicApiKey(created.profile, anthropicApiKey, rootDir);
+    return { profile: created.profile, anthropic };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    log.warn('ui', 'qr-register-anthropic-failed', { profile: created.profile, err: reason });
+    return {
+      profile: created.profile,
+      warning: `bot 已创建，但保存 Anthropic API key 失败：${reason}。请在 profile 详情页重新连接`,
+    };
+  }
+}
+
+async function checkKeyOrBadRequest(apiKey: string, validate?: AnthropicKeyValidator): Promise<string> {
+  try {
+    return await checkAnthropicApiKey(apiKey, validate);
+  } catch (err) {
+    if (err instanceof AnthropicAccountError) throw new HttpError(400, err.message);
+    throw err;
+  }
 }

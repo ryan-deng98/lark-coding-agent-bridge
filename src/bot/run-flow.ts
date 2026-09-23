@@ -129,10 +129,11 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     }
   }
   if (!resumeFrom && input.capability.agentId === 'claude') {
-    resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
+    resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath, policy.claudeConfigDir);
     sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
-    if (!resumeFrom && stale?.cwd && stale.cwd !== workspace.cwdRealpath) {
+    // Recorded in another cwd or Claude config dir: it can't be resumed here.
+    if (!resumeFrom && stale?.sessionId) {
       input.sessions.clear(input.scopeId);
     }
   }
@@ -190,7 +191,7 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
   if (input.event.type !== 'system') return;
   if (input.capability.agentId === 'claude' && input.event.sessionId) {
     const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
-    input.sessions.set(input.scopeId, input.event.sessionId, cwdRealpath);
+    input.sessions.set(input.scopeId, input.event.sessionId, cwdRealpath, input.policy.claudeConfigDir);
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
       agentId: 'claude',

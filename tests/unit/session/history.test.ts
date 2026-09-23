@@ -52,6 +52,23 @@ describe('Claude local session history', () => {
     ]);
   });
 
+  it("lists sessions from the bot's own Claude login dir when one is given", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'claude-login-dir-'));
+    cleanup.push(configDir);
+    const { listRecentSessions } = await import('../../../src/session/history.js');
+    const projectDir = join(configDir, 'projects', '-repo');
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, 'bot-session.jsonl'),
+      `${JSON.stringify({ type: 'user', message: { content: 'from the bot login' } })}\n`,
+      'utf8',
+    );
+
+    const sessions = await listRecentSessions('/repo', 5, configDir);
+
+    expect(sessions.map((s) => s.sessionId)).toEqual(['bot-session']);
+  });
+
   it('summarizes bridge prompts using the real user input section', async () => {
     const home = await mkdtemp(join(tmpdir(), 'claude-history-home-'));
     cleanup.push(home);

@@ -214,3 +214,129 @@ describe('ui server (supervisor-backed)', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('ui server anthropic account routes', () => {
+  const KEY = `sk-ant-api03-${'b'.repeat(40)}LAST`;
+  type Validation = { ok: true } | { ok: false; reason: string };
+
+  async function restartWith(validate: (apiKey: string) => Promise<Validation>, restarted: string[] = []) {
+    await handle.close();
+    const supervisor = stubSupervisor();
+    supervisor.restartProfile = async (p) => {
+      restarted.push(p);
+    };
+    handle = await startUiServer({ supervisor, version: 'test', rootDir, validateAnthropicApiKey: validate });
+    base = `http://127.0.0.1:${handle.port}`;
+  }
+
+  it('connects, reports and disconnects a key, restarting the bot only when it is online', async () => {
+    const restarted: string[] = [];
+    const seen: string[] = [];
+    await restartWith(async (apiKey) => {
+      seen.push(apiKey);
+      return { ok: true };
+    }, restarted);
+
+    expect(await json(await get('/api/anthropic?profile=claude', handle.token))).toMatchObject({ connected: false });
+
+    const res = await post('/api/anthropic/connect', handle.token, { profile: 'claude', apiKey: KEY });
+    expect(res.status).toBe(200);
+    const connected = await json(res);
+    expect(connected).toMatchObject({ connected: true, keyHint: 'sk-ant-…LAST', restarted: true });
+    expect(JSON.stringify(connected)).not.toContain(KEY);
+    expect(seen).toEqual([KEY]);
+    expect(restarted).toEqual(['claude']);
+
+    const offline = await json(await post('/api/anthropic/connect', handle.token, { profile: 'work', apiKey: KEY }));
+    expect(offline).toMatchObject({ connected: true, restarted: false });
+    expect(restarted).toEqual(['claude']);
+
+    expect(await json(await get('/api/anthropic?profile=claude', handle.token))).toMatchObject({
+      connected: true,
+      keyHint: 'sk-ant-…LAST',
+    });
+
+    const disconnected = await json(await post('/api/anthropic/disconnect', handle.token, { profile: 'claude' }));
+    expect(disconnected).toEqual({ connected: false, restarted: true });
+    expect(restarted).toEqual(['claude', 'claude']);
+  });
+
+  it('keeps a saved key and reports why the running bot could not restart onto it', async () => {
+    await handle.close();
+    const supervisor = stubSupervisor();
+    supervisor.restartProfile = async () => {
+      throw new Error('claude binary not found');
+    };
+    handle = await startUiServer({
+      supervisor,
+      version: 'test',
+      rootDir,
+      validateAnthropicApiKey: async () => ({ ok: true }),
+    });
+    base = `http://127.0.0.1:${handle.port}`;
+
+    const res = await post('/api/anthropic/connect', handle.token, { profile: 'claude', apiKey: KEY });
+
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({
+      connected: true,
+      restarted: false,
+      restartError: 'claude binary not found',
+    });
+    expect(await json(await get('/api/anthropic?profile=claude', handle.token))).toMatchObject({ connected: true });
+  });
+
+  it("connects the bot's own Claude login and shows how to sign in first", async () => {
+    await handle.close();
+    const restarted: string[] = [];
+    const checked: string[] = [];
+    const supervisor = stubSupervisor();
+    supervisor.restartProfile = async (p) => {
+      restarted.push(p);
+    };
+    handle = await startUiServer({
+      supervisor,
+      version: 'test',
+      rootDir,
+      checkClaudeLogin: async (dir) => {
+        checked.push(dir);
+        return { loggedIn: true, orgName: 'Acme', subscriptionType: 'team' };
+      },
+    });
+    base = `http://127.0.0.1:${handle.port}`;
+    const loginDir = join(rootDir, 'profiles', 'claude', 'claude-code');
+
+    expect(await json(await get('/api/anthropic?profile=claude', handle.token))).toEqual({
+      connected: false,
+      loginCommand: `CLAUDE_CONFIG_DIR='${loginDir}' claude auth login`,
+    });
+
+    const res = await post('/api/anthropic/connect-login', handle.token, { profile: 'claude' });
+
+    expect(res.status).toBe(200);
+    expect(await json(res)).toMatchObject({
+      connected: true,
+      mode: 'claude-login',
+      accountHint: 'Acme · team',
+      restarted: true,
+    });
+    expect(checked).toEqual([loginDir]);
+    expect(restarted).toEqual(['claude']);
+  });
+
+  it('answers 400 with the reason when the key is refused', async () => {
+    await restartWith(async () => ({ ok: false, reason: 'API key 无效或已被吊销（401）' }));
+
+    const res = await post('/api/anthropic/connect', handle.token, { profile: 'claude', apiKey: KEY });
+
+    expect(res.status).toBe(400);
+    expect((await json(res)).error).toMatch(/无效/);
+  });
+
+  it('requires an explicit profile to change the account', async () => {
+    await restartWith(async () => ({ ok: true }));
+
+    expect((await post('/api/anthropic/connect', handle.token, { apiKey: KEY })).status).toBe(400);
+    expect((await post('/api/anthropic/disconnect', handle.token, {})).status).toBe(400);
+  });
+});

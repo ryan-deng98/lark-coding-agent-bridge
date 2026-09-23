@@ -16,6 +16,7 @@ import {
   checkRuntimeAgentAvailability,
   createRuntimeAgent,
   releaseRuntimeLocks,
+  resolveRuntimeAgentAuthEnv,
 } from './agent-runtime';
 import {
   acquireAppRuntimeLock,
@@ -209,10 +210,16 @@ class ManagedProfile {
       const next = nextRuntime.cfg;
       if (!isComplete(next)) throw new Error('config incomplete after change');
       assertReconnectAgentKindUnchanged(this.profileConfig.agentKind, nextRuntime.profileConfig.agentKind);
-      const nextAgent = createRuntimeAgent(nextRuntime.profileConfig, {
-        ...nextRuntime.appPaths,
-        configPath: nextRuntime.configPath,
-      });
+      const claudeAuthEnv = await resolveRuntimeAgentAuthEnv(
+        nextRuntime.profileConfig,
+        next,
+        nextRuntime.appPaths,
+      );
+      const nextAgent = createRuntimeAgent(
+        nextRuntime.profileConfig,
+        { ...nextRuntime.appPaths, configPath: nextRuntime.configPath },
+        { claudeAuthEnv },
+      );
       const availability = await checkRuntimeAgentAvailability(nextAgent);
       if (!availability.ok) throw availability.error;
 
@@ -331,7 +338,8 @@ export class Supervisor {
       });
     }
 
-    const agent = createRuntimeAgent(profileConfig, { ...appPaths, configPath });
+    const claudeAuthEnv = await resolveRuntimeAgentAuthEnv(profileConfig, cfg, appPaths);
+    const agent = createRuntimeAgent(profileConfig, { ...appPaths, configPath }, { claudeAuthEnv });
     if (this.opts.runPreflight !== false) {
       const availability = await checkRuntimeAgentAvailability(agent);
       if (!availability.ok) throw availability.error;

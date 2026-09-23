@@ -1,5 +1,7 @@
 import type { LarkChannel } from '@larksuite/channel';
 import type { KnownChat } from '../bot/lark-info';
+import type { ClaudeLoginChecker } from '../agent/claude/login-status';
+import type { AnthropicKeyValidator } from '../config/anthropic-account';
 import type { MutableProfileState } from '../config/config-ops';
 import type { Controls } from '../commands';
 import type { ManagedStatus } from '../runtime/supervisor';
@@ -39,6 +41,10 @@ export interface UiServerDeps {
   host?: string;
   /** Bind port; 0 (default) picks an ephemeral port. */
   port?: number;
+  /** Anthropic key check; defaults to a live `GET /v1/models`. Injected by tests. */
+  validateAnthropicApiKey?: AnthropicKeyValidator;
+  /** Claude login check; defaults to `claude auth status`. Injected by tests. */
+  checkClaudeLogin?: ClaudeLoginChecker;
 }
 
 export interface UiServerHandle {

@@ -21,6 +21,11 @@ import { translateEvent } from './stream-json';
 export interface ClaudeAdapterOptions {
   binary?: string;
   larkChannel?: LarkChannelEnvContext;
+  /**
+   * Env overrides for the bot's own Anthropic account (see
+   * `buildAnthropicAuthEnv`). Omitted → runs use the host's `claude` login.
+   */
+  authEnv?: NodeJS.ProcessEnv;
 }
 
 type ClaudeChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -31,11 +36,13 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private readonly binary: string;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly authEnv: NodeJS.ProcessEnv | undefined;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.larkChannel = opts.larkChannel;
+    this.authEnv = opts.authEnv;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -85,7 +92,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
+      env: mergeProcessEnv(process.env, { ...buildLarkChannelEnv(this.larkChannel), ...this.authEnv }),
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as ClaudeChild;
 
@@ -95,6 +102,11 @@ export class ClaudeAdapter implements AgentAdapter {
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model: opts.model,
+      auth: this.authEnv?.CLAUDE_CONFIG_DIR
+        ? 'profile-claude-login'
+        : this.authEnv?.ANTHROPIC_API_KEY
+          ? 'profile-api-key'
+          : 'host-login',
     });
 
     // Listeners MUST be attached synchronously here, before we return.

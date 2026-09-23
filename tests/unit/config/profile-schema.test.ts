@@ -4,6 +4,7 @@ import {
   clampAccess,
 } from '../../../src/config/permissions';
 import {
+  claudeLoginConfigDir,
   createDefaultProfileConfig,
   effectiveLarkCliIdentity,
   normalizeProfileConfig,
@@ -158,6 +159,69 @@ describe('profile schema', () => {
     });
 
     expect(cfg.workspaces).toEqual({});
+  });
+
+  it('keeps a connected Anthropic account and drops malformed fields', () => {
+    const connected = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      anthropic: { keyHint: 'sk-ant-…WXYZ', connectedAt: '2026-09-23T00:00:00.000Z', stray: true },
+    });
+    expect(connected.anthropic).toEqual({
+      keyHint: 'sk-ant-…WXYZ',
+      connectedAt: '2026-09-23T00:00:00.000Z',
+    });
+
+    const injected = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      anthropic: { apiKey: '${ANTHROPIC_API_KEY}', keyHint: 42 },
+    });
+    expect(injected.anthropic).toEqual({ apiKey: '${ANTHROPIC_API_KEY}' });
+
+    for (const anthropic of [undefined, null, 'sk-ant-plain', ['x']]) {
+      const cfg = normalizeProfileConfig({ schemaVersion: 2, agentKind: 'claude', accounts: { app }, anthropic });
+      expect(cfg).not.toHaveProperty('anthropic');
+    }
+  });
+
+  it('keeps a Claude account login and exposes its config dir only for Claude profiles', () => {
+    const login = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      anthropic: {
+        mode: 'claude-login',
+        claudeConfigDir: '/state/bot/claude-code',
+        accountHint: 'me@example.com',
+        apiKey: 'ignored-in-login-mode',
+      },
+    });
+    expect(login.anthropic).toEqual({
+      mode: 'claude-login',
+      claudeConfigDir: '/state/bot/claude-code',
+      accountHint: 'me@example.com',
+    });
+    expect(claudeLoginConfigDir(login)).toBe('/state/bot/claude-code');
+
+    const missingDir = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      anthropic: { mode: 'claude-login' },
+    });
+    expect(missingDir).not.toHaveProperty('anthropic');
+
+    const apiKeyMode = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      anthropic: { keyHint: 'sk-ant-…WXYZ' },
+    });
+    expect(claudeLoginConfigDir(apiKeyMode)).toBeUndefined();
+    expect(claudeLoginConfigDir({ ...login, agentKind: 'codex' })).toBeUndefined();
   });
 
   it('defaults lark-cli identity to app-only without legacy global source fields', () => {

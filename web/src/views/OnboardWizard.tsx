@@ -31,6 +31,7 @@ function uniqueName(base: string, existing: string[]): string {
 export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => void }) {
   const [agentKind, setAgentKind] = useState<AgentKind>("claude");
   const [profileName, setProfileName] = useState("");
+  const [anthropicApiKey, setAnthropicApiKey] = useState("");
   const [botName, setBotName] = useState("");
   const [detected, setDetected] = useState<AgentKind[]>([]);
   const [existing, setExisting] = useState<string[]>([]);
@@ -99,13 +100,17 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
   async function confirmCreate() {
     if (!qr) return;
     setPhase("creating");
+    const apiKey = agentKind === "claude" ? anthropicApiKey.trim() : "";
     try {
-      const r = await apiPost<{ profile: string }>("/api/profiles/qr/finish", {
+      const r = await apiPost<{ profile: string; warning?: string }>("/api/profiles/qr/finish", {
         sessionId: qr.sessionId,
         agentKind,
         profile: profileName.trim(),
+        ...(apiKey ? { anthropicApiKey: apiKey } : {}),
       });
-      toast.success(`profile「${r.profile}」已创建`);
+      setAnthropicApiKey("");
+      if (r.warning) toast.warning(r.warning);
+      else toast.success(`profile「${r.profile}」已创建${apiKey ? "，已连接你的 Anthropic 账号" : ""}`);
       onCreated(r.profile);
     } catch (e) {
       setPhase("confirm"); // let the user fix the name / retry
@@ -147,6 +152,24 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
             <p className="text-xs text-destructive">已存在同名 profile，请换个名字（不会覆盖现有的）。</p>
           )}
         </div>
+        {agentKind === "claude" && (
+          <div className="space-y-1.5">
+            <Label htmlFor="anthropic-api-key">Anthropic API Key（可选）</Label>
+            <Input
+              id="anthropic-api-key"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={anthropicApiKey}
+              onChange={(e) => setAnthropicApiKey(e.target.value)}
+              placeholder="sk-ant-api03-…"
+            />
+            <p className="text-xs text-muted-foreground">
+              填了这个 bot 就用你自己的 Anthropic 账号计费；留空则用本机 claude 登录。只接受 Claude
+              Console 创建的 API key，创建前会先校验，之后也能在 profile 页更换。
+            </p>
+          </div>
+        )}
         <div className="flex justify-end">
           <Button
             onClick={confirmCreate}
