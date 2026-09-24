@@ -22,6 +22,7 @@ import {
 import { withLegacyLarkCliSourceOverlay } from '../lark-cli/legacy-source-overlay';
 import { writeLarkCliSourceProjection } from '../lark-cli/profile-projection';
 import { mergeProcessEnv, spawnProcess, spawnProcessSync } from '../platform/spawn';
+import { ensureBotProcess } from '../runtime/bot-user';
 import { writeFileAtomic } from '../platform/atomic-write';
 
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -728,11 +729,15 @@ async function runCapture(
 ): Promise<RunResult> {
   let captured = '';
   let timedOut = false;
+  // A profile's lark-cli runs as its bot user (multi-user mode), so the config
+  // it writes stays readable and writable by that bot's own lark-cli.
+  const runAs = env ? await ensureBotProcess(env) : undefined;
 
   const exitCode = await new Promise<number | null>((resolve) => {
     const child = spawnProcess(cmd, args, {
-      env: env ? mergeProcessEnv(process.env, env) : undefined,
+      env: env ? mergeProcessEnv(process.env, { ...env, ...runAs?.env }) : undefined,
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...runAs?.spawn,
     });
     child.stdout?.on('data', (b: Buffer) => {
       captured += b.toString('utf8');

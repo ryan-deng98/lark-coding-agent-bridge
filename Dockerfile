@@ -42,11 +42,13 @@ RUN chmod +x /usr/local/bin/bridge-entrypoint /app/bin/lark-channel-bridge.mjs \
   && ln -s /app/bin/lark-channel-bridge.mjs /usr/local/bin/lark-channel-bridge
 
 # State lives on the volume at /data: bots, their encrypted secrets, each bot's
-# own Claude Code login and its workspaces. The container is the sandbox, so
-# Claude Code may run bots with bypassPermissions as root (IS_SANDBOX).
+# own Claude Code login and its workspaces. Several people's bots share this
+# container, so each bot's agent and tools run as its own OS user
+# (LARK_CHANNEL_BOT_USERS); the bridge itself stays root to set them up.
 ENV NODE_ENV=production \
     LARK_CHANNEL_HOME=/data/lark-channel \
     LARK_CHANNEL_UI_HOST=0.0.0.0 \
+    LARK_CHANNEL_BOT_USERS=1 \
     DISABLE_AUTOUPDATER=1 \
     IS_SANDBOX=1
 

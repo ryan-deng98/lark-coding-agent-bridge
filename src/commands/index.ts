@@ -70,6 +70,7 @@ import {
 } from '../session/codex-history';
 import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
+import { botUsersEnabled } from '../runtime/bot-user';
 import { readUiSidecar } from '../ui/sidecar';
 import type { SessionStore } from '../session/store';
 import { resolveWorkingDirectory } from '../policy/workspace';
@@ -744,11 +745,13 @@ async function listCodexResumeHistory(
 
   const provider = ctx.codexHistoryProvider ?? listCodexThreadHistory;
   try {
+    const paths = commandProfilePaths(ctx);
     return await provider({
       binary,
       cwd,
       limit,
-      profileStateDir: commandProfilePaths(ctx).profileDir,
+      profileStateDir: paths.profileDir,
+      larkChannel: { rootDir: paths.rootDir, profile: paths.profile },
       ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
       ...(codex.inheritCodexHome !== undefined
         ? { inheritCodexHome: codex.inheritCodexHome }
@@ -977,7 +980,16 @@ function parseTimeoutTarget(input: string, currentScope: string): {
   };
 }
 
+// /ps and /exit see and stop every bot on the host (/exit on itself stops the
+// whole supervisor): nothing a bot's own owner should reach when bots are shared.
+const HOST_COMMAND_DISABLED =
+  '多人共用的部署里不能用这个命令：它会看到、关掉别人的 bot。需要重启请找管理员在控制台操作。';
+
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {
+  if (botUsersEnabled()) {
+    await reply(ctx, HOST_COMMAND_DISABLED);
+    return;
+  }
   const live = readAndPrune();
   log.info('command', 'ps', { count: live.length });
   if (live.length === 0) {
@@ -1006,6 +1018,10 @@ async function handlePs(_args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function handleExit(args: string, ctx: CommandContext): Promise<void> {
+  if (botUsersEnabled()) {
+    await reply(ctx, HOST_COMMAND_DISABLED);
+    return;
+  }
   const target = args.trim();
   if (!target) {
     await reply(

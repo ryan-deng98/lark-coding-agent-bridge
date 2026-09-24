@@ -1,6 +1,7 @@
 import { resolveAppPaths } from '../config/app-paths';
 import { buildLarkChannelEnv } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
+import { ensureBotProcess } from '../runtime/bot-user';
 import { log } from '../core/logger';
 
 /**
@@ -80,13 +81,16 @@ interface ExecResult {
 
 export type PreflightExec = (args: string[], env: NodeJS.ProcessEnv) => Promise<ExecResult>;
 
-const defaultExec: PreflightExec = (args, env) =>
-  new Promise<ExecResult>((resolve) => {
+const defaultExec: PreflightExec = async (args, env) => {
+  // Multi-user mode: the bot's lark-cli runs as its bot user.
+  const runAs = await ensureBotProcess(env);
+  return new Promise<ExecResult>((resolve) => {
     let stdout = '';
     let stderr = '';
     const child = spawnProcess('lark-cli', args, {
-      env: mergeProcessEnv(process.env, env),
+      env: mergeProcessEnv(process.env, { ...env, ...runAs.env }),
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...runAs.spawn,
     });
     child.stdout?.on('data', (b: Buffer) => (stdout += b.toString('utf8')));
     child.stderr?.on('data', (b: Buffer) => (stderr += b.toString('utf8')));
@@ -100,6 +104,7 @@ const defaultExec: PreflightExec = (args, env) =>
       resolve({ code, stdout, stderr });
     });
   });
+};
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return Boolean(v) && typeof v === 'object' && !Array.isArray(v);

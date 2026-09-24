@@ -1,6 +1,8 @@
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
+import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../agent/lark-channel-env';
+import { botSpawnOptions } from '../runtime/bot-user';
 import {
   mergeProcessEnv,
   spawnProcess,
@@ -35,6 +37,8 @@ export interface ListCodexThreadHistoryOptions {
   profileStateDir: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
+  /** The profile the history belongs to (in multi-user mode, whose bot user runs the server). */
+  larkChannel?: LarkChannelEnvContext;
   timeoutMs?: number;
   sourceKinds?: readonly CodexThreadSourceKind[];
   useStateDbOnly?: boolean;
@@ -171,16 +175,20 @@ export async function listCodexThreadHistory(
 }
 
 function spawnCodexAppServer(options: ListCodexThreadHistoryOptions): CodexAppServerChild {
-  const envOverrides: NodeJS.ProcessEnv = {};
+  const envOverrides: NodeJS.ProcessEnv = options.larkChannel ? buildLarkChannelEnv(options.larkChannel) : {};
   if (options.codexHome) {
     envOverrides.CODEX_HOME = options.codexHome;
   } else if (options.inheritCodexHome === false) {
     envOverrides.CODEX_HOME = join(options.profileStateDir, 'codex-home');
   }
 
+  const env = mergeProcessEnv(process.env, envOverrides);
   return spawnProcess(options.binary, ['app-server', '--listen', 'stdio://'], {
-    env: mergeProcessEnv(process.env, envOverrides),
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // The app server loads the bot-writable CODEX_HOME config (MCP servers,
+    // hooks): in multi-user mode it runs as the bot, never as root.
+    ...botSpawnOptions(env),
   }) as CodexAppServerChild;
 }
 

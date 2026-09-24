@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type { ClaudeLoginChecker, ClaudeLoginStatus } from '../agent/claude/login-status';
+import { botUserFor, ensureBotUser, type BotUser } from '../runtime/bot-user';
 import { validateAnthropicApiKey, type AnthropicKeyValidation } from '../utils/anthropic-auth';
 import { resolveAppPaths, type AppPaths } from './app-paths';
 import { getSecret, removeSecret, setSecret, type KeystorePaths } from './keystore';
@@ -85,7 +86,11 @@ export async function readAnthropicAccount(profile: string, rootDir?: string): P
   const root = await loadRootConfig(appPaths.configFile);
   const current = root?.profiles[appPaths.profile];
   if (!current) throw new AnthropicAccountError(`profile 不存在：${appPaths.profile}`);
-  return { ...anthropicAccountView(current), loginCommand: claudeLoginCommand(claudeLoginDir(appPaths)) };
+  const botUser = botUserFor(appPaths.rootDir, appPaths.profile) ?? (await ensureBotUser(appPaths));
+  return {
+    ...anthropicAccountView(current),
+    loginCommand: claudeLoginCommand(claudeLoginDir(appPaths), botUser),
+  };
 }
 
 /** The bot's own Claude Code config dir: its login, sessions and settings. */
@@ -93,9 +98,19 @@ export function claudeLoginDir(appPaths: Pick<AppPaths, 'profileDir'>): string {
   return join(appPaths.profileDir, 'claude-code');
 }
 
-/** What the user runs to sign the bot in — Anthropic's own flow, never the bridge's. */
-export function claudeLoginCommand(claudeConfigDir: string): string {
-  return `CLAUDE_CONFIG_DIR='${claudeConfigDir.replace(/'/g, `'\\''`)}' claude auth login`;
+/**
+ * What the user runs to sign the bot in — Anthropic's own flow, never the
+ * bridge's. In multi-user mode it runs as the bot's user with a clean env, so
+ * the credentials it writes are the bot's and no bridge secret leaks into it.
+ */
+export function claudeLoginCommand(claudeConfigDir: string, botUser?: BotUser): string {
+  const login = `CLAUDE_CONFIG_DIR=${shellQuote(claudeConfigDir)} claude auth login`;
+  if (!botUser) return login;
+  return `setpriv --reuid=${botUser.uid} --regid=${botUser.gid} --clear-groups --reset-env env ${login}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export interface ConnectClaudeLoginDeps {
@@ -118,15 +133,18 @@ export async function connectClaudeLogin(
   const root = await loadRootConfig(appPaths.configFile);
   assertClaudeProfile(root?.profiles[appPaths.profile], appPaths.profile);
   const claudeConfigDir = claudeLoginDir(appPaths);
+  // Multi-user mode: hand the dir back to the bot first (a login run as plain
+  // root leaves root-owned credentials), then check as the bot itself.
+  const botUser = await ensureBotUser(appPaths);
   let status: ClaudeLoginStatus;
   try {
-    status = await deps.checkLogin(claudeConfigDir);
+    status = await deps.checkLogin(claudeConfigDir, { botUser });
   } catch (err) {
     throw new AnthropicAccountError(`无法检查 Claude 登录状态：${errorMessage(err)}`);
   }
   if (!status.loggedIn) {
     throw new AnthropicAccountError(
-      `这个 bot 还没登录 Claude 账号。请先在终端运行：${claudeLoginCommand(claudeConfigDir)}`,
+      `这个 bot 还没登录 Claude 账号。请先在终端运行：${claudeLoginCommand(claudeConfigDir, botUser)}`,
     );
   }
   const anthropic: AnthropicAccountConfig = {

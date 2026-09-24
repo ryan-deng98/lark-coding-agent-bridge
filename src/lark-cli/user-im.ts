@@ -1,6 +1,7 @@
 import { resolveAppPaths } from '../config/app-paths';
 import { buildLarkChannelEnv } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
+import { ensureBotProcess } from '../runtime/bot-user';
 import { log } from '../core/logger';
 
 /**
@@ -74,14 +75,17 @@ export type LarkCliExec = (
   timeoutMs: number,
 ) => Promise<ExecResult>;
 
-const defaultExec: LarkCliExec = (args, env, timeoutMs) =>
-  new Promise<ExecResult>((resolve) => {
+const defaultExec: LarkCliExec = async (args, env, timeoutMs) => {
+  // Multi-user mode: the bot's lark-cli runs as its bot user.
+  const runAs = await ensureBotProcess(env);
+  return new Promise<ExecResult>((resolve) => {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     const child = spawnProcess('lark-cli', args, {
-      env: mergeProcessEnv(process.env, env),
+      env: mergeProcessEnv(process.env, { ...env, ...runAs.env }),
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...runAs.spawn,
     });
     child.stdout?.on('data', (b: Buffer) => (stdout += b.toString('utf8')));
     child.stderr?.on('data', (b: Buffer) => (stderr += b.toString('utf8')));
@@ -98,6 +102,7 @@ const defaultExec: LarkCliExec = (args, env, timeoutMs) =>
       resolve({ code, stdout, stderr, timedOut });
     });
   });
+};
 
 function larkCliEnv(ctx: UserImContext): NodeJS.ProcessEnv {
   const appPaths = resolveAppPaths({ rootDir: ctx.rootDir, profile: ctx.profile });

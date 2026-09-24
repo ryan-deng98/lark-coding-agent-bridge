@@ -4,6 +4,7 @@ import { KEYSTORE_SECRET_ENV } from '../config/keystore';
 import type { AppConfig, ProviderConfig, SecretRef, SecretsConfig } from '../config/schema';
 import { isSecretRef } from '../config/schema';
 import { ensureSecretsGetterWrapper } from '../config/store';
+import { botUserFor, shareWithBotUser } from '../runtime/bot-user';
 import { writeFileAtomic } from '../platform/atomic-write';
 
 export async function writeLarkCliSourceProjection(
@@ -17,8 +18,11 @@ export async function writeLarkCliSourceProjection(
     | 'secretsGetterScript'
   >,
 ): Promise<string> {
-  await mkdir(appPaths.larkCliSourceDir, { recursive: true, mode: 0o700 });
-  await chmod(appPaths.larkCliSourceDir, 0o700).catch(() => {});
+  // Multi-user mode: the bot's own lark-cli, running as its bot user, reads this.
+  const botUser = botUserFor(appPaths.rootDir, appPaths.profile);
+  const dirMode = botUser ? 0o750 : 0o700;
+  await mkdir(appPaths.larkCliSourceDir, { recursive: true, mode: dirMode });
+  await chmod(appPaths.larkCliSourceDir, dirMode).catch(() => {});
 
   const secrets = await buildProjectionSecrets(cfg, appPaths);
   const projection = {
@@ -35,6 +39,7 @@ export async function writeLarkCliSourceProjection(
   await writeFileAtomic(appPaths.larkCliSourceConfigFile, `${JSON.stringify(projection, null, 2)}\n`, {
     mode: 0o600,
   });
+  if (botUser) await shareWithBotUser(appPaths.larkCliSourceConfigFile, botUser);
   return appPaths.larkCliSourceConfigFile;
 }
 

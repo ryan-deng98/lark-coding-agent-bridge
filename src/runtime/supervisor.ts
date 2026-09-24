@@ -24,6 +24,7 @@ import {
   type AcquiredRuntimeLock,
 } from './locks';
 import { resolveProfileRuntime } from './profile-runtime';
+import { ensureBotUser } from './bot-user';
 import {
   register,
   unregister,
@@ -323,6 +324,8 @@ export class Supervisor {
       }
     }
 
+    // Multi-user mode: the bot's own OS user, before anything runs on its behalf.
+    await ensureBotUser(appPaths);
     if (this.opts.runPreflight !== false) {
       await preFlightChecks({
         bridgeConfig: cfg,
@@ -336,6 +339,8 @@ export class Supervisor {
           larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile,
         },
       });
+      // Hand back anything preflight left owned by root in the bot's dirs.
+      await ensureBotUser(appPaths);
     }
 
     const claudeAuthEnv = await resolveRuntimeAgentAuthEnv(profileConfig, cfg, appPaths);

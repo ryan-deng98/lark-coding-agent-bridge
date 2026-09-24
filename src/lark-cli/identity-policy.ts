@@ -1,5 +1,6 @@
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
+import { ensureBotProcess } from '../runtime/bot-user';
 import type { LarkCliIdentityPreset } from '../config/profile-schema';
 
 const POLICY_TIMEOUT_MS = 30_000;
@@ -52,10 +53,12 @@ async function runQuiet(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   let timedOut = false;
+  const runAs = await ensureBotProcess(env);
   const exitCode = await new Promise<number | null>((resolve) => {
     const child = spawnProcess(cmd, args, {
-      env: mergeProcessEnv(process.env, env),
+      env: mergeProcessEnv(process.env, { ...env, ...runAs.env }),
       stdio: ['ignore', 'ignore', 'ignore'],
+      ...runAs.spawn,
     });
     const timer = setTimeout(() => {
       timedOut = true;

@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chownSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { botSpawnOptions } from '../../runtime/bot-user';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
@@ -75,7 +76,10 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
-    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
+    const env = mergeProcessEnv(process.env, { ...buildLarkChannelEnv(this.larkChannel), ...this.authEnv });
+    // Multi-user mode: the agent runs as its bot's own OS user.
+    const runAs = botSpawnOptions(env);
+    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity), runAs);
 
     const args = [
       '-p',
@@ -92,8 +96,9 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, { ...buildLarkChannelEnv(this.larkChannel), ...this.authEnv }),
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...runAs,
     }) as ClaudeChild;
 
     log.info('agent', 'spawn', {
@@ -287,10 +292,18 @@ async function* createEventStream(
  * passed via `--append-system-prompt-file` instead of argv. Returns the path
  * plus an idempotent, best-effort cleanup that removes the temp directory.
  */
-function writeSystemPromptFile(content: string): { path: string; cleanup: () => void } {
+function writeSystemPromptFile(
+  content: string,
+  owner: { uid?: number; gid?: number } = {},
+): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), 'lark-claude-'));
   const path = join(dir, 'append-system-prompt.md');
   writeFileSync(path, content, 'utf8');
+  // An agent running as its bot user must be able to read it (the dir is 0700).
+  if (owner.uid !== undefined && owner.gid !== undefined) {
+    chownSync(dir, owner.uid, owner.gid);
+    chownSync(path, owner.uid, owner.gid);
+  }
   return {
     path,
     cleanup: () => {

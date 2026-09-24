@@ -1,5 +1,7 @@
 import type { Readable } from 'node:stream';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { botUserEnv, botUsersEnabled, type BotUser } from '../../runtime/bot-user';
+import { withoutBridgeOnlyEnv } from '../../runtime/bridge-env';
 import { buildClaudeLoginEnv } from './anthropic-env';
 
 const STATUS_TIMEOUT_MS = 15_000;
@@ -13,7 +15,10 @@ export interface ClaudeLoginStatus {
   subscriptionType?: string;
 }
 
-export type ClaudeLoginChecker = (claudeConfigDir: string) => Promise<ClaudeLoginStatus>;
+export type ClaudeLoginChecker = (
+  claudeConfigDir: string,
+  opts?: { botUser?: BotUser },
+) => Promise<ClaudeLoginStatus>;
 
 /**
  * Ask Claude Code whether a config dir is signed in (`claude auth status`,
@@ -22,9 +27,14 @@ export type ClaudeLoginChecker = (claudeConfigDir: string) => Promise<ClaudeLogi
  */
 export async function checkClaudeLogin(
   claudeConfigDir: string,
-  opts: { binary?: string; timeoutMs?: number } = {},
+  opts: { binary?: string; timeoutMs?: number; botUser?: BotUser } = {},
 ): Promise<ClaudeLoginStatus> {
-  const stdout = await runAuthStatus(claudeConfigDir, opts.binary ?? 'claude', opts.timeoutMs ?? STATUS_TIMEOUT_MS);
+  const stdout = await runAuthStatus(
+    claudeConfigDir,
+    opts.binary ?? 'claude',
+    opts.timeoutMs ?? STATUS_TIMEOUT_MS,
+    opts.botUser,
+  );
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -44,13 +54,28 @@ export async function checkClaudeLogin(
   };
 }
 
-function runAuthStatus(claudeConfigDir: string, binary: string, timeoutMs: number): Promise<string> {
+function runAuthStatus(
+  claudeConfigDir: string,
+  binary: string,
+  timeoutMs: number,
+  botUser: BotUser | undefined,
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    // Claude Code runs helpers from the config dir (apiKeyHelper, hooks), and
+    // in multi-user mode that dir is the bot's to write: never run it as root.
+    if (botUsersEnabled() && !botUser) {
+      reject(new Error('未准备好这个 bot 的系统用户，拒绝以 root 身份运行 claude auth status'));
+      return;
+    }
     let child: SpawnedProcessByStdio<null, Readable, Readable>;
     try {
       child = spawnProcess(binary, ['auth', 'status'], {
-        env: mergeProcessEnv(process.env, buildClaudeLoginEnv(claudeConfigDir)),
+        env: mergeProcessEnv(process.env, {
+          ...buildClaudeLoginEnv(claudeConfigDir),
+          ...(botUser ? botUserEnv(botUser) : withoutBridgeOnlyEnv()),
+        }),
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...(botUser ? { uid: botUser.uid, gid: botUser.gid } : {}),
       }) as SpawnedProcessByStdio<null, Readable, Readable>;
     } catch (err) {
       reject(new Error(`无法运行 claude auth status：${err instanceof Error ? err.message : String(err)}`));

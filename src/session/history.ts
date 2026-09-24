@@ -1,9 +1,21 @@
 import { createReadStream } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
+import { lstat, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
+import { botUsersEnabled } from '../runtime/bot-user';
 import { normalizeSessionPreview } from './preview';
+
+/** Whether `path` (followed through any symlinks) is inside `base`. Missing → false. */
+async function resolvesInside(path: string, base: string): Promise<boolean> {
+  try {
+    const [real, realBase] = await Promise.all([realpath(path), realpath(base)]);
+    return real.startsWith(`${realBase}${sep}`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw err;
+  }
+}
 
 export interface SessionSummary {
   sessionId: string;
@@ -30,6 +42,11 @@ export async function listRecentSessions(
   claudeConfigDir?: string,
 ): Promise<SessionSummary[]> {
   const dir = claudeProjectDir(cwd, claudeConfigDir);
+  // Multi-user mode: the config dir is the bot's to write, and this runs as
+  // root — a symlinked projects/ dir or session file must not make it list or
+  // read another bot's sessions.
+  const confined = botUsersEnabled();
+  if (confined && !(await resolvesInside(dir, claudeConfigDir ?? join(homedir(), '.claude')))) return [];
   let files: string[];
   try {
     files = await readdir(dir);
@@ -43,7 +60,8 @@ export async function listRecentSessions(
     jsonls.map(async (f) => {
       const path = join(dir, f);
       try {
-        const st = await stat(path);
+        const st = confined ? await lstat(path) : await stat(path);
+        if (confined && !st.isFile()) return null;
         return { file: f, path, mtime: st.mtimeMs };
       } catch {
         return null;

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { botSpawnOptions } from '../../runtime/bot-user';
 import { SpawnFailed } from '../../runtime/errors';
 import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
@@ -108,10 +109,13 @@ export class CodexAdapter implements AgentAdapter {
     } else if (!this.inheritCodexHome) {
       envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
     }
+    const env = mergeProcessEnv(process.env, envOverrides);
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, envOverrides),
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Multi-user mode: the agent runs as its bot's own OS user.
+      ...botSpawnOptions(env),
     }) as CodexChild;
 
     log.info('agent', 'spawn', {

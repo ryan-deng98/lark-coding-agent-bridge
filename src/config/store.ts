@@ -5,6 +5,7 @@ import { paths } from './paths';
 import type { AppConfig, AppPreferences, TenantBrand } from './schema';
 import { secretKeyForApp } from './schema';
 import { writeFileAtomic } from '../platform/atomic-write';
+import { botUsersEnabled } from '../runtime/bot-user';
 
 export async function loadConfig(path: string = paths.configFile): Promise<Partial<AppConfig>> {
   try {
@@ -112,7 +113,9 @@ export async function ensureSecretsGetterWrapper(
     `# Forwards exec-provider requests to: node bridge secrets get\n` +
     `LARK_CHANNEL_HOME=${sq(rootDir)} exec ${sq(node)} ${sq(bridgeEntry)} secrets get "$@"\n`;
 
-  await writeFileAtomic(wrapperPath, content, { mode: 0o700 });
+  // Multi-user mode: each bot's lark-cli runs it as that bot's user. It holds
+  // only paths; what it may decrypt is bounded by which keystore the bot can read.
+  await writeFileAtomic(wrapperPath, content, { mode: botUsersEnabled() ? 0o755 : 0o700 });
   return wrapperPath;
 }
 
