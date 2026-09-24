@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { resolveUiExposure } from '../../../src/ui/exposure';
+import { consolePublicUrl, resolveUiExposure } from '../../../src/ui/exposure';
+
+describe('consolePublicUrl', () => {
+  it("names the console's public address, and nothing when there is none", () => {
+    expect(consolePublicUrl({ LARK_CHANNEL_UI_ALLOWED_HOSTS: 'bridge.up.railway.app' })).toBe(
+      'https://bridge.up.railway.app/',
+    );
+    expect(consolePublicUrl({})).toBeUndefined();
+    expect(consolePublicUrl({ LARK_CHANNEL_UI_ALLOWED_HOSTS: 'https://not-a-bare-host/' })).toBeUndefined();
+  });
+});
 
 const TOKEN = 't'.repeat(64);
 

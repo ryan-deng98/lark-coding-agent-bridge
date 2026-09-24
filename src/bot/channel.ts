@@ -67,7 +67,9 @@ import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quo
 import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
+import { HintThrottle, nonAllowedDmHint } from './dm-hint';
 import type { AppPaths } from '../config/app-paths';
+import { consolePublicUrl } from '../ui/exposure';
 import {
   consumeCotEvents,
   CotClient,
@@ -76,6 +78,8 @@ import {
 } from './cot';
 
 const DEBOUNCE_MS = 600;
+// DM chats already told where to get their own bot (see dm-hint).
+const dmHints = new HintThrottle();
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
 
@@ -715,6 +719,13 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && msg.mentionedBot) {
       void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
         log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
+      );
+    }
+    // A shared deployment points strangers at its console instead of going silent.
+    const consoleUrl = msg.chatType === 'p2p' && accessDecision.reason === 'denied-user' ? consolePublicUrl() : undefined;
+    if (consoleUrl && dmHints.take(msg.chatId)) {
+      void channel.send(msg.chatId, { text: nonAllowedDmHint(consoleUrl) }).catch((err) =>
+        log.warn('intake', 'non-allowed-dm-hint-failed', { err: String(err) }),
       );
     }
     return;

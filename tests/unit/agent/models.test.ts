@@ -42,7 +42,16 @@ describe('agent model catalog', () => {
   });
 
   it('labels a stored value using the picker option text', () => {
-    expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8（最新）');
+    expect(modelLabel('claude', 'claude-opus-5-5')).toBe('Opus 5.5（最新）');
+    expect(modelLabel('claude', 'claude-opus-4-8')).toBe('Opus 4.8');
     expect(modelLabel('claude', DEFAULT_MODEL)).toContain('跟随默认');
+  });
+
+  it('offers the Claude 5 models while keeping older picks selectable', () => {
+    const values = supportedModels('claude').map((m) => m.value);
+
+    expect(values).toEqual(
+      expect.arrayContaining(['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7']),
+    );
   });
 });

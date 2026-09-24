@@ -53,6 +53,16 @@ export function resolveUiExposure(env: NodeJS.ProcessEnv = process.env): UiExpos
   };
 }
 
+/** The console's public address, when the deployment has one: for pointing people to it. */
+export function consolePublicUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  try {
+    const host = parseAllowedHosts(env[UI_ALLOWED_HOSTS_ENV])[0];
+    return host ? `https://${host}/` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function parsePort(raw: string | undefined): number | undefined {
   const value = raw?.trim();
   if (!value) return undefined;
