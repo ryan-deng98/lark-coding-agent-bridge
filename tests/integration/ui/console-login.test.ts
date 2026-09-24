@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -32,18 +32,29 @@ const PEOPLE: Record<string, { union_id: string; name: string }> = {
   'code-carol': { union_id: 'on_carol', name: 'Carol' },
 };
 
+// Lark documents only v2; its accounts.larksuite.com/oauth/v3/token turns real Lark codes down (invalid_grant).
+const LARK_TOKEN_URL = 'https://open.larksuite.com/open-apis/authen/v2/oauth/token';
+
 let rootDir: string;
 let handle: UiServerHandle;
 let login: LoginConfig;
 let larkCalls: string[];
+let tokenRequests: { contentType: string; body: Record<string, string> }[];
 
 const fakeLark: LarkFetch = async (url, init) => {
   larkCalls.push(url);
-  if (url.endsWith('/oauth/v3/token')) {
-    const code = new URLSearchParams(String(init.body)).get('code') ?? '';
-    return Response.json(PEOPLE[code] ? { code: 0, access_token: `at-${code}` } : { code: 20003, error: 'invalid_grant' });
+  const headers = init.headers as Record<string, string>;
+  if (url === LARK_TOKEN_URL) {
+    const body = JSON.parse(String(init.body)) as Record<string, string>;
+    tokenRequests.push({ contentType: headers['content-type'] ?? '', body });
+    const code = body.code ?? '';
+    return Response.json(
+      PEOPLE[code]
+        ? { code: 0, access_token: `at-${code}` }
+        : { code: 20003, error: 'invalid_grant', error_description: 'The authorization code is not found.' },
+    );
   }
-  const token = String((init.headers as Record<string, string>).authorization).replace('Bearer at-', '');
+  const token = String(headers.authorization).replace('Bearer at-', '');
   return Response.json({ code: 0, data: PEOPLE[token] });
 };
 
@@ -128,6 +139,7 @@ beforeEach(async () => {
   for (const name of Object.keys(root.profiles)) await mkdir(join(rootDir, 'profiles', name), { recursive: true });
   await writeActiveProfile(rootDir, 'admin-bot');
   larkCalls = [];
+  tokenRequests = [];
   login = resolveLoginConfig({
     env: LOGIN_ENV,
     publicUrl: `https://${DOMAIN}/`,
@@ -166,10 +178,39 @@ describe('console sign-in with Lark', () => {
     const me = await call('/api/me', { cookie });
 
     expect(JSON.parse(me.body)).toEqual({ kind: 'user', id: 'on_alice', name: 'Alice', admin: false });
-    expect(larkCalls).toEqual([
-      'https://accounts.larksuite.com/oauth/v3/token',
-      'https://open.larksuite.com/open-apis/authen/v1/user_info',
-    ]);
+    expect(larkCalls).toEqual([LARK_TOKEN_URL, 'https://open.larksuite.com/open-apis/authen/v1/user_info']);
+  });
+
+  it('trades the code as JSON, with the redirect and the PKCE verifier the authorize request promised', async () => {
+    const start = await call('/auth/lark/login');
+    const authorize = new URL(start.location!);
+
+    await call(`/auth/lark/callback?code=code-alice&state=${authorize.searchParams.get('state')}`, {
+      cookie: start.cookies.join('; '),
+    });
+
+    expect(tokenRequests).toHaveLength(1);
+    const [exchange] = tokenRequests;
+    expect(exchange!.contentType).toBe('application/json; charset=utf-8');
+    expect(exchange!.body).toMatchObject({
+      grant_type: 'authorization_code',
+      client_id: 'cli_login',
+      client_secret: LOGIN_ENV.LARK_CHANNEL_LOGIN_APP_SECRET,
+      code: 'code-alice',
+      redirect_uri: authorize.searchParams.get('redirect_uri'),
+    });
+    const challenge = createHash('sha256').update(exchange!.body.code_verifier ?? '').digest('base64url');
+    expect(challenge).toBe(authorize.searchParams.get('code_challenge'));
+  });
+
+  it('sends the browser back with a failure when Lark turns the code down', async () => {
+    const start = await call('/auth/lark/login');
+    const state = new URL(start.location!).searchParams.get('state')!;
+
+    const done = await call(`/auth/lark/callback?code=code-unknown&state=${state}`, { cookie: start.cookies.join('; ') });
+
+    expect(done.location).toBe('/?login_error=failed');
+    expect(done.cookies.some((c) => c.startsWith('lcb_session=') && c.length > 'lcb_session='.length)).toBe(false);
   });
 
   it('refuses a callback whose state does not match the one it sent', async () => {

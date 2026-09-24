@@ -157,7 +157,7 @@ export function startLogin(res: ServerResponse, login: LoginConfig): void {
   const state = randomBytes(16).toString('base64url');
   const verifier = randomBytes(32).toString('base64url');
   setCookie(res, STATE_COOKIE, sign({ state, verifier }, login.sessionKey, STATE_TTL_S), STATE_TTL_S);
-  const authorize = new URL(`https://${domains(login.tenant).accounts}/open-apis/authen/v1/authorize`);
+  const authorize = new URL(endpoints(login.tenant).authorize);
   authorize.searchParams.set('client_id', login.appId);
   authorize.searchParams.set('response_type', 'code');
   authorize.searchParams.set('redirect_uri', login.redirectUri);
@@ -215,23 +215,29 @@ export function logout(res: ServerResponse): void {
 }
 
 async function exchangeCode(login: LoginConfig, code: string, verifier: string, fetchImpl: LarkFetch): Promise<string> {
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: login.appId,
-    client_secret: login.appSecret,
-    code,
-    redirect_uri: login.redirectUri,
-    code_verifier: verifier,
-  });
-  const res = await fetchImpl(`https://${domains(login.tenant).accounts}/oauth/v3/token`, {
+  const res = await fetchImpl(endpoints(login.tenant).token, {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
+    // Lark's v2 endpoint takes JSON only; Feishu's v3 takes it as well.
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      client_id: login.appId,
+      client_secret: login.appSecret,
+      code,
+      redirect_uri: login.redirectUri,
+      code_verifier: verifier,
+    }),
     signal: AbortSignal.timeout(LARK_TIMEOUT_MS),
   });
-  const json = (await res.json().catch(() => ({}))) as { code?: number; access_token?: string; error?: string };
+  const json = (await res.json().catch(() => ({}))) as {
+    code?: number;
+    access_token?: string;
+    error?: string;
+    error_description?: string;
+  };
   if (json.code !== 0 || !json.access_token) {
-    throw new Error(`token exchange failed: ${json.error ?? `code ${json.code ?? res.status}`}`);
+    const detail = json.error_description ? `: ${json.error_description.slice(0, 200)}` : '';
+    throw new Error(`token exchange failed: ${json.error ?? 'error'} (code ${json.code ?? res.status})${detail}`);
   }
   return json.access_token;
 }
@@ -241,17 +247,21 @@ async function fetchPerson(
   accessToken: string,
   fetchImpl: LarkFetch,
 ): Promise<{ unionId: string; name: string; tenantKey?: string }> {
-  const res = await fetchImpl(`https://${domains(login.tenant).open}/open-apis/authen/v1/user_info`, {
+  const res = await fetchImpl(endpoints(login.tenant).userInfo, {
     method: 'GET',
     headers: { authorization: `Bearer ${accessToken}` },
     signal: AbortSignal.timeout(LARK_TIMEOUT_MS),
   });
   const json = (await res.json().catch(() => ({}))) as {
     code?: number;
+    msg?: string;
     data?: { union_id?: string; name?: string; tenant_key?: string };
   };
   const unionId = json.data?.union_id;
-  if (json.code !== 0 || !unionId) throw new Error(`user_info failed: code ${json.code ?? res.status}`);
+  if (json.code !== 0 || !unionId) {
+    const detail = json.msg ? `: ${json.msg.slice(0, 200)}` : '';
+    throw new Error(`user_info failed: code ${json.code ?? res.status}${detail}`);
+  }
   return {
     unionId,
     name: json.data?.name || unionId,
@@ -259,10 +269,22 @@ async function fetchPerson(
   };
 }
 
-function domains(tenant: LoginTenant): { accounts: string; open: string } {
+/**
+ * Lark documents only the v2 token endpoint (its accounts.larksuite.com/oauth/v3/token
+ * turns real Lark codes down with invalid_grant); Feishu has moved on to v3.
+ */
+function endpoints(tenant: LoginTenant): { authorize: string; token: string; userInfo: string } {
   return tenant === 'lark'
-    ? { accounts: 'accounts.larksuite.com', open: 'open.larksuite.com' }
-    : { accounts: 'accounts.feishu.cn', open: 'open.feishu.cn' };
+    ? {
+        authorize: 'https://accounts.larksuite.com/open-apis/authen/v1/authorize',
+        token: 'https://open.larksuite.com/open-apis/authen/v2/oauth/token',
+        userInfo: 'https://open.larksuite.com/open-apis/authen/v1/user_info',
+      }
+    : {
+        authorize: 'https://accounts.feishu.cn/open-apis/authen/v1/authorize',
+        token: 'https://accounts.feishu.cn/oauth/v3/token',
+        userInfo: 'https://open.feishu.cn/open-apis/authen/v1/user_info',
+      };
 }
 
 function sign(payload: Record<string, unknown>, key: Buffer, ttlSeconds: number): string {
