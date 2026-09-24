@@ -22,7 +22,7 @@ import {
 import { withLegacyLarkCliSourceOverlay } from '../lark-cli/legacy-source-overlay';
 import { writeLarkCliSourceProjection } from '../lark-cli/profile-projection';
 import { mergeProcessEnv, spawnProcess, spawnProcessSync } from '../platform/spawn';
-import { ensureBotProcess } from '../runtime/bot-user';
+import { botUsersEnabled, ensureBotProcess } from '../runtime/bot-user';
 import { writeFileAtomic } from '../platform/atomic-write';
 
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -202,7 +202,12 @@ async function checkLarkCli(opts: PreFlightOptions): Promise<void> {
         BIND_TIMEOUT_MS,
         larkChannelEnv,
       );
-      if (showResult.success) return;
+      // Multi-user mode: lark-cli keeps the App Secret in its own keychain
+      // (local files on Linux), and one made before the bot had its own user,
+      // or in an earlier container, is out of the bot's reach — `config show`
+      // can't tell. Rebinding a bot-only target is idempotent: do it each start.
+      const rebind = botUsersEnabled() && !target.hasUserAuth;
+      if (showResult.success && !rebind) return;
     }
   }
 

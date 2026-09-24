@@ -75,7 +75,11 @@ export async function runSecretsGet(): Promise<void> {
         (resp.errors ??= {})[id] = { message: 'not found' };
       }
     } catch (err) {
-      (resp.errors ??= {})[id] = { message: (err as Error).message };
+      // A profile this caller can't reach reads the same as one that doesn't
+      // exist: a bot running the getter mustn't learn which other bots exist.
+      const code = (err as NodeJS.ErrnoException).code;
+      const unreachable = code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || code === 'ENOTDIR';
+      (resp.errors ??= {})[id] = { message: unreachable ? 'not found' : (err as Error).message };
     }
   }
   process.stdout.write(`${JSON.stringify(resp)}\n`);

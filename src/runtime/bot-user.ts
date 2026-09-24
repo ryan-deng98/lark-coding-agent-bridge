@@ -49,6 +49,8 @@ export interface BotUserSystem {
   chmod(path: string, mode: number): Promise<void>;
   /** Recursive ownership change that never follows symlinks. */
   chownTree(path: string, uid: number, gid: number): Promise<void>;
+  /** Whether the kernel stops users hardlinking files they don't own. */
+  hardlinksProtected(): Promise<boolean>;
 }
 
 export interface EnsureBotUserOptions {
@@ -73,6 +75,13 @@ const defaultSystem: BotUserSystem = {
       throw new Error(`chown -R ${path} failed: ${String(r.stderr ?? '').trim() || `exit ${r.status}`}`);
     }
   },
+  async hardlinksProtected() {
+    try {
+      return (await readFile('/proc/sys/fs/protected_hardlinks', 'utf8')).trim() === '1';
+    } catch {
+      return false;
+    }
+  },
 };
 
 const users = new Map<string, BotUser>();
@@ -94,6 +103,12 @@ export async function ensureBotUser(
 ): Promise<BotUser | undefined> {
   if (!(opts.enabled ?? botUsersEnabled())) return undefined;
   const system = opts.system ?? defaultSystem;
+  // Re-owning a bot's tree each start is safe against links only while the
+  // kernel refuses hardlinks to files one doesn't own (chown -h stops at
+  // symlinks, but a hardlink *is* the foreign file).
+  if (!(await system.hardlinksProtected())) {
+    throw new Error('fs.protected_hardlinks is off on this host; refusing multi-user mode');
+  }
   const uid = await allocateUid(paths.rootDir, paths.profile);
   const name = `${ACCOUNT_PREFIX}${uid}`;
   const user: BotUser = { uid, gid: uid, name, home: join(paths.profileDir, 'home') };
@@ -230,10 +245,13 @@ async function layOutFiles(paths: BotUserPaths, user: BotUser, system: BotUserSy
     await mkdir(dir, { recursive: true });
     await system.chmod(dir, 0o711);
   }
-  // The bridge's own state (logs, process registry) stays root-only.
+  // The bridge's own state (logs, process registry) stays root-only, and so
+  // does its shared secrets getter (each bot's lark-cli has its own copy).
   for (const dir of [join(paths.rootDir, 'logs'), join(paths.rootDir, 'registry')]) {
     if (await isRealDir(dir)) await system.chmod(dir, 0o700);
   }
+  const sharedGetter = join(paths.rootDir, 'secrets-getter');
+  if (await isRealFile(sharedGetter)) await system.chmod(sharedGetter, 0o700);
 
   // The profile dir holds the bridge's files for this bot (sessions, logs,
   // keystore): only this bot may pass through it, to its own subdirectories.

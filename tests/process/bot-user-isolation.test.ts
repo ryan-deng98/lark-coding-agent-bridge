@@ -1,10 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolveAppPaths, type AppPaths } from '../../src/config/app-paths';
 import { setSecret } from '../../src/config/keystore';
+import { writeLarkCliSourceProjection } from '../../src/lark-cli/profile-projection';
 import { clearBotUsersForTests, ensureBotUser, type BotUser } from '../../src/runtime/bot-user';
 
 // Real uids, chown and /etc/passwd: only as root inside a throwaway container,
@@ -110,6 +111,31 @@ describe.skipIf(!RUN)('bot user isolation (as root, in a container)', () => {
       );
 
     expect(getter('alice').out).toContain('"app-alice":"secret-of-alice"');
-    expect(getter('bob').out).not.toContain('secret-of-bob');
+    const probe = getter('bob').out;
+    expect(probe).not.toContain('secret-of-bob');
+    // Reads like a missing profile: no path, no EACCES — nothing to enumerate bots by.
+    expect(probe).toContain('"message":"not found"');
+    expect(probe).not.toMatch(/EACCES|permission denied|profiles\//i);
+  });
+
+  it("gives each bot's lark-cli its own getter, owned by the bot (lark-cli refuses anyone else's)", async () => {
+    await writeLarkCliSourceProjection(
+      {
+        accounts: {
+          app: { id: 'cli_alice', tenant: 'lark', secret: { source: 'exec', provider: 'bridge', id: 'app-alice' } },
+        },
+      },
+      alice,
+    );
+
+    const source = JSON.parse(await readFile(alice.larkCliSourceConfigFile, 'utf8'));
+    const command: string = source.secrets.providers.bridge.command;
+    const st = await stat(command);
+    expect(command).toBe(join(alice.larkCliSourceDir, 'secrets-getter'));
+    expect([st.uid, st.mode & 0o777]).toEqual([a.uid, 0o700]);
+    expect(source.secrets.providers.bridge.passEnv).toEqual(['LARK_CHANNEL_KEYSTORE_SECRET']);
+    // The bot can read its source config, but can't replace the getter with a link.
+    expect(asUser(a, `cat '${alice.larkCliSourceConfigFile}' > /dev/null`).ok).toBe(true);
+    expect(asUser(a, `ln -sf /bin/sh '${command}'`).ok).toBe(false);
   });
 });

@@ -45,6 +45,7 @@ async function setup(profiles: string[] = ['alice']): Promise<{
     chmod: async (path: string, mode: number) => void calls.push({ op: 'chmod', path, args: [mode] }),
     chownTree: async (path: string, uid: number, gid: number) =>
       void calls.push({ op: 'chownTree', path, args: [uid, gid] }),
+    hardlinksProtected: async () => true,
   };
   await writeFile(system.passwdFile, 'root:x:0:0:root:/root:/bin/bash\n');
   await writeFile(system.groupFile, 'root:x:0:\n');
@@ -133,6 +134,15 @@ describe('ensureBotUser', () => {
 
     await expect(ensureBotUser(p, { enabled: true, system })).rejects.toThrow(/not a directory/);
     expect(system.calls.some((c) => c.path.startsWith(join(p.profileDir, 'claude-code')) && c.op !== 'chmod')).toBe(false);
+  });
+
+  it('refuses multi-user mode where the kernel allows hardlinking foreign files', async () => {
+    const { paths, system } = await setup();
+
+    await expect(
+      ensureBotUser(paths[0] as AppPaths, { enabled: true, system: { ...system, hardlinksProtected: async () => false } }),
+    ).rejects.toThrow(/protected_hardlinks/);
+    expect(system.calls).toEqual([]);
   });
 
   it('does nothing unless multi-user mode is on', async () => {

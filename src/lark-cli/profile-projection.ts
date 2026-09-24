@@ -1,10 +1,11 @@
-import { chmod, mkdir } from 'node:fs/promises';
+import { chmod, chown, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AppPaths } from '../config/app-paths';
 import { KEYSTORE_SECRET_ENV } from '../config/keystore';
 import type { AppConfig, ProviderConfig, SecretRef, SecretsConfig } from '../config/schema';
 import { isSecretRef } from '../config/schema';
 import { ensureSecretsGetterWrapper } from '../config/store';
-import { botUserFor, shareWithBotUser } from '../runtime/bot-user';
+import { botUserFor, shareWithBotUser, type BotUser } from '../runtime/bot-user';
 import { writeFileAtomic } from '../platform/atomic-write';
 
 export async function writeLarkCliSourceProjection(
@@ -24,7 +25,7 @@ export async function writeLarkCliSourceProjection(
   await mkdir(appPaths.larkCliSourceDir, { recursive: true, mode: dirMode });
   await chmod(appPaths.larkCliSourceDir, dirMode).catch(() => {});
 
-  const secrets = await buildProjectionSecrets(cfg, appPaths);
+  const secrets = await buildProjectionSecrets(cfg, appPaths, botUser);
   const projection = {
     accounts: {
       app: {
@@ -45,14 +46,17 @@ export async function writeLarkCliSourceProjection(
 
 async function buildProjectionSecrets(
   cfg: AppConfig,
-  appPaths: Pick<AppPaths, 'rootDir' | 'profile' | 'secretsGetterScript'>,
+  appPaths: Pick<AppPaths, 'rootDir' | 'profile' | 'secretsGetterScript' | 'larkCliSourceDir'>,
+  botUser: BotUser | undefined,
 ): Promise<SecretsConfig | undefined> {
   const providers: Record<string, ProviderConfig> = {
     ...(cfg.secrets?.providers ?? {}),
   };
   const providerName = bridgeProviderName(cfg.accounts.app.secret);
   if (providerName) {
-    const wrapperPath = await ensureSecretsGetterWrapper(appPaths);
+    const wrapperPath = botUser
+      ? await ensureBotSecretsGetter(appPaths, botUser)
+      : await ensureSecretsGetterWrapper(appPaths);
     const existing = providers[providerName];
     providers[providerName] = {
       ...(existing ?? {}),
@@ -76,6 +80,24 @@ async function buildProjectionSecrets(
     ...(cfg.secrets?.defaults ? { defaults: cfg.secrets.defaults } : {}),
     ...(Object.keys(providers).length > 0 ? { providers } : {}),
   };
+}
+
+/**
+ * lark-cli only runs an exec provider owned by its own user, so each bot user
+ * gets its own copy of the secrets getter. It sits in the bridge-written source
+ * dir, which the bot can't write, so the bot can't swap it for a link; owning
+ * the file only lets it change what its own lark-cli runs as itself. The bridge
+ * never runs this copy.
+ */
+async function ensureBotSecretsGetter(
+  appPaths: Pick<AppPaths, 'rootDir' | 'larkCliSourceDir'>,
+  botUser: BotUser,
+): Promise<string> {
+  const path = join(appPaths.larkCliSourceDir, 'secrets-getter');
+  await ensureSecretsGetterWrapper({ secretsGetterScript: path, rootDir: appPaths.rootDir });
+  await chown(path, botUser.uid, botUser.gid);
+  await chmod(path, 0o700);
+  return path;
 }
 
 function bridgeProviderName(secret: AppConfig['accounts']['app']['secret']): string | undefined {
