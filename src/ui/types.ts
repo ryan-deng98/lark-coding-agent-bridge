@@ -1,6 +1,7 @@
 import type { LarkChannel } from '@larksuite/channel';
 import type { KnownChat } from '../bot/lark-info';
 import type { ClaudeLoginChecker } from '../agent/claude/login-status';
+import type { ClaudeWebLoginStarter } from '../agent/claude/web-login';
 import type { LarkFetch, LoginConfig } from './console-auth';
 import type { AnthropicKeyValidator } from '../config/anthropic-account';
 import type { MutableProfileState } from '../config/config-ops';
@@ -54,6 +55,8 @@ export interface UiServerDeps {
   validateAnthropicApiKey?: AnthropicKeyValidator;
   /** Claude login check; defaults to `claude auth status`. Injected by tests. */
   checkClaudeLogin?: ClaudeLoginChecker;
+  /** Signs a bot's Claude Code dir in from the page; defaults to `claude auth login`. Injected by tests. */
+  claudeWebLogin?: ClaudeWebLoginStarter;
 }
 
 export interface UiServerHandle {

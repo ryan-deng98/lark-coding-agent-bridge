@@ -4,6 +4,8 @@ import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ClaudeLoginChecker } from '../../../src/agent/claude/login-status';
+import type { ClaudeWebLoginStarter } from '../../../src/agent/claude/web-login';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig, writeActiveProfile } from '../../../src/config/profile-store';
 import {
@@ -57,6 +59,41 @@ const fakeLark: LarkFetch = async (url, init) => {
   const token = String(headers.authorization).replace('Bearer at-', '');
   return Response.json({ code: 0, data: PEOPLE[token] });
 };
+
+// Stand-in for `claude auth login`: each attempt, and which config dirs it signed in.
+interface ClaudeAttempt {
+  dir: string;
+  submitted: string[];
+  cancelled: boolean;
+}
+let claudeAttempts: ClaudeAttempt[];
+let signedInDirs: Set<string>;
+
+const fakeClaudeWebLogin: ClaudeWebLoginStarter = async (dir) => {
+  const attempt: ClaudeAttempt = { dir, submitted: [], cancelled: false };
+  claudeAttempts.push(attempt);
+  let settle = () => {};
+  const closed = new Promise<void>((resolve) => (settle = resolve));
+  return {
+    url: 'https://claude.com/cai/oauth/authorize?code=true&state=s1',
+    closed,
+    cancel: () => {
+      attempt.cancelled = true;
+      settle();
+    },
+    submit: async (code) => {
+      attempt.submitted.push(code);
+      settle();
+      if (code !== 'good-code#state') throw new Error('Login failed: Request failed with status code 400');
+      signedInDirs.add(dir);
+    },
+  };
+};
+
+const fakeCheckClaudeLogin: ClaudeLoginChecker = async (dir) =>
+  signedInDirs.has(dir)
+    ? { loggedIn: true, authMethod: 'claude.ai', orgName: 'LibrAI', subscriptionType: 'team' }
+    : { loggedIn: false };
 
 function supervisor(): UiSupervisor {
   const online = new Set<string>();
@@ -140,6 +177,8 @@ beforeEach(async () => {
   await writeActiveProfile(rootDir, 'admin-bot');
   larkCalls = [];
   tokenRequests = [];
+  claudeAttempts = [];
+  signedInDirs = new Set();
   login = resolveLoginConfig({
     env: LOGIN_ENV,
     publicUrl: `https://${DOMAIN}/`,
@@ -154,6 +193,8 @@ beforeEach(async () => {
     allowedHosts: [DOMAIN],
     login,
     larkFetch: fakeLark,
+    claudeWebLogin: fakeClaudeWebLogin,
+    checkClaudeLogin: fakeCheckClaudeLogin,
   });
 });
 
@@ -321,5 +362,81 @@ describe('console sign-in with Lark', () => {
 
     expect((await call('/api/me', { cookie: `lcb_session=${forged}.${mac}` })).status).toBe(401);
     expect((await call('/api/me', { cookie: `lcb_session=${body}.${mac}x` })).status).toBe(401);
+  });
+});
+
+describe("connecting a bot to its owner's Claude account from the page", () => {
+  const start = (cookie: string, profile: string) =>
+    call('/api/anthropic/claude-login/start', { method: 'POST', cookie, origin: true, body: { profile } });
+  const finish = (cookie: string, body: object) =>
+    call('/api/anthropic/claude-login/finish', { method: 'POST', cookie, origin: true, body });
+
+  it("signs a person's own bot in to their own Claude account", async () => {
+    const alice = await signIn('code-alice');
+
+    const started = await start(alice, 'alice-bot');
+    const { sessionId, url } = JSON.parse(started.body);
+    const done = await finish(alice, { profile: 'alice-bot', sessionId, code: 'good-code#state' });
+
+    expect(url).toBe('https://claude.com/cai/oauth/authorize?code=true&state=s1');
+    expect(claudeAttempts.map((a) => a.dir)).toEqual([join(rootDir, 'profiles', 'alice-bot', 'claude-code')]);
+    expect(done.status).toBe(200);
+    expect(JSON.parse(done.body)).toMatchObject({ connected: true, mode: 'claude-login', accountHint: 'LibrAI · team' });
+    const account = JSON.parse((await call('/api/anthropic?profile=alice-bot', { cookie: alice })).body);
+    expect(account).toMatchObject({ connected: true, mode: 'claude-login' });
+  });
+
+  it("won't start or finish a sign-in for someone else's bot", async () => {
+    const alice = await signIn('code-alice');
+    const carol = await signIn('code-carol');
+
+    expect((await start(alice, 'bob-bot')).status).toBe(404);
+    const { sessionId } = JSON.parse((await start(carol, 'alice-bot')).body);
+    const taken = await finish(alice, { profile: 'alice-bot', sessionId, code: 'good-code#state' });
+
+    expect(taken.status).toBe(404);
+    expect(claudeAttempts[0]?.submitted).toEqual([]);
+  });
+
+  it("says why a code didn't work, and the attempt is used up", async () => {
+    const alice = await signIn('code-alice');
+    const { sessionId } = JSON.parse((await start(alice, 'alice-bot')).body);
+
+    const first = await finish(alice, { profile: 'alice-bot', sessionId, code: 'stale-code#state' });
+    const again = await finish(alice, { profile: 'alice-bot', sessionId, code: 'good-code#state' });
+
+    expect(first.status).toBe(400);
+    expect(JSON.parse(first.body).error).toMatch(/status code 400/);
+    expect(again.status).toBe(404);
+  });
+
+  it("keeps a pasted code that can't be one away from Claude Code, and lets them paste again", async () => {
+    const alice = await signIn('code-alice');
+    const { sessionId } = JSON.parse((await start(alice, 'alice-bot')).body);
+
+    const garbled = await finish(alice, { profile: 'alice-bot', sessionId, code: 'good-code#state\n/logout' });
+    expect(garbled.status).toBe(422);
+    expect(claudeAttempts[0]?.submitted).toEqual([]);
+
+    const retried = await finish(alice, { profile: 'alice-bot', sessionId, code: 'good-code#state' });
+    expect(retried.status).toBe(200);
+  });
+
+  it('drops an attempt that is cancelled, or replaced by a newer one', async () => {
+    const alice = await signIn('code-alice');
+    const first = JSON.parse((await start(alice, 'alice-bot')).body);
+    const second = JSON.parse((await start(alice, 'alice-bot')).body);
+
+    const cancelled = await call('/api/anthropic/claude-login/cancel', {
+      method: 'POST',
+      cookie: alice,
+      origin: true,
+      body: { profile: 'alice-bot', sessionId: second.sessionId },
+    });
+
+    expect(cancelled.status).toBe(200);
+    expect(claudeAttempts.map((a) => a.cancelled)).toEqual([true, true]);
+    const late = await finish(alice, { profile: 'alice-bot', sessionId: first.sessionId, code: 'good-code#state' });
+    expect(late.status).toBe(404);
   });
 });

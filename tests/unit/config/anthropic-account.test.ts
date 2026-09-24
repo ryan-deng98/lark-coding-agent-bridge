@@ -129,7 +129,7 @@ describe('connectClaudeLogin', () => {
 
     await expect(
       connectClaudeLogin({ profile: 'claude' }, root, { checkLogin: async () => ({ loggedIn: false }) }),
-    ).rejects.toThrow(/claude auth login/);
+    ).rejects.toThrow(/连接我的 Claude 账号/);
     const { profileConfig } = await runtimeFor(root, 'claude');
     expect(profileConfig).not.toHaveProperty('anthropic');
   });

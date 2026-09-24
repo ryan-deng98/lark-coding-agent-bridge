@@ -5,13 +5,16 @@ import { log } from '../core/logger';
 import { readActiveProfile } from '../config/profile-store';
 import type { MutableProfileState } from '../config/config-ops';
 import { checkClaudeLogin } from '../agent/claude/login-status';
+import { normalizeClaudeLoginCode, startClaudeWebLogin } from '../agent/claude/web-login';
 import {
   AnthropicAccountError,
   connectAnthropicAccount,
   connectClaudeLogin,
   disconnectAnthropicAccount,
+  openClaudeWebLogin,
   readAnthropicAccount,
 } from '../config/anthropic-account';
+import { ClaudeLoginSessions } from './claude-login-sessions';
 import consoleHtml from './generated/index.html';
 import {
   addBotToChatView,
@@ -155,6 +158,8 @@ async function handle(
 
 // Who started each QR registration: only they may poll or finish it.
 const qrStartedBy = new Map<string, string>();
+// Claude sign-ins started from the page, likewise bound to whoever started them.
+const claudeLogins = new ClaudeLoginSessions();
 
 function principalKey(principal: Principal): string {
   return principal.kind === 'user' ? `user:${principal.id}` : 'token';
@@ -368,15 +373,53 @@ async function route(
     sendJson(res, 200, { ...view, ...(await restartIfOnline(sup, profile)) });
     return;
   }
+  // Checks as the bot's own user (the second argument), never as root.
+  const checkLogin = deps.checkClaudeLogin ?? checkClaudeLogin;
   if (path === '/api/anthropic/connect-login' && p) {
     const body = (await readJsonBody(req)) as { profile?: unknown };
     const profile = await own(requireProfile(body.profile));
-    const view = await asBadRequest(() =>
-      connectClaudeLogin({ profile }, deps.rootDir, {
-        checkLogin: deps.checkClaudeLogin ?? ((dir) => checkClaudeLogin(dir)),
-      }),
-    );
+    const view = await asBadRequest(() => connectClaudeLogin({ profile }, deps.rootDir, { checkLogin }));
     sendJson(res, 200, { ...view, ...(await restartIfOnline(sup, profile)) });
+    return;
+  }
+  // Signing the bot in from the page: the sign-in address goes to the browser,
+  // the code from Anthropic's page comes back and is typed into Claude Code.
+  if (path === '/api/anthropic/claude-login/start' && p) {
+    const body = (await readJsonBody(req)) as { profile?: unknown };
+    const profile = await own(requireProfile(body.profile));
+    const start = deps.claudeWebLogin ?? startClaudeWebLogin;
+    sendJson(
+      res,
+      200,
+      await claudeLogins.start(profile, principalKey(principal), () =>
+        asBadRequest(() => openClaudeWebLogin({ profile }, deps.rootDir, start)),
+      ),
+    );
+    return;
+  }
+  if (path === '/api/anthropic/claude-login/finish' && p) {
+    const body = (await readJsonBody(req)) as { profile?: unknown; sessionId?: unknown; code?: unknown };
+    const profile = await own(requireProfile(body.profile));
+    const code = normalizeClaudeLoginCode(body.code);
+    // 422: the attempt is still open, the person can paste again.
+    if (!code.ok) throw new HttpError(422, code.reason);
+    const login = claudeLogins.claim(String(body.sessionId ?? ''), profile, principalKey(principal));
+    try {
+      await login.submit(code.code);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      log.warn('ui', 'claude-web-login-failed', { profile, err: reason });
+      throw new HttpError(400, `Claude 登录没有成功（${reason}）。请重新点「连接我的 Claude 账号」`);
+    }
+    const view = await asBadRequest(() => connectClaudeLogin({ profile }, deps.rootDir, { checkLogin }));
+    sendJson(res, 200, { ...view, ...(await restartIfOnline(sup, profile)) });
+    return;
+  }
+  if (path === '/api/anthropic/claude-login/cancel' && p) {
+    const body = (await readJsonBody(req)) as { profile?: unknown; sessionId?: unknown };
+    const profile = await own(requireProfile(body.profile));
+    claudeLogins.cancel(String(body.sessionId ?? ''), profile, principalKey(principal));
+    sendJson(res, 200, { ok: true });
     return;
   }
   if (path === '/api/anthropic/disconnect' && p) {

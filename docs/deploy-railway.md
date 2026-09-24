@@ -57,17 +57,13 @@ railway up --detach
 
 ## 6. 连接 bot 自己的 Claude 账号
 
-1. 控制台 → bot 详情 →「Anthropic 账号」→「Claude 账号登录」，复制登录命令。
-2. 进容器：
+1. 控制台 → bot 详情 →「Claude 账号」→「连接我的 Claude 账号」。
+2. 点「打开 Claude 登录页」，用自己的 Claude 账号（Pro / Max / Team / Enterprise）登录并授权。Team 账号选公司的组织。
+3. 把页面上显示的授权码复制回控制台，点「完成连接」。bot 自动重启生效，在 Lark 里发 `/status` 可以看到当前账号。
 
-   ```bash
-   railway ssh
-   ```
+登录由服务器上以这个 bot 的系统用户运行的 `claude auth login` 完成：授权码只用一次，Claude Code 把它换成登录凭据，存在这个 bot 自己的配置目录（`/data/lark-channel/profiles/<bot>/claude-code/`）。bridge 不保存授权码，也不读取凭据。
 
-   粘贴登录命令，在浏览器里登录 Claude（Pro / Max / Team / Enterprise），把页面给的 code 粘回终端。
-3. 回控制台点「我已登录，连接」，bot 自动重启生效。在 Lark 里发 `/status` 可以看到当前账号。
-
-凭据保存在这个 bot 自己的配置目录（`/data/lark-channel/profiles/<bot>/claude-code/`），bridge 不读取它。
+备用（管理员）：卡片里「备用：在容器终端里登录」给出一条命令，`railway ssh` 进容器运行它，再点「我已在终端登录，连接」。
 
 ## 运维
 
@@ -78,9 +74,9 @@ railway up --detach
 
 ## 7. 让同事自助使用（Lark 登录）
 
-1. 在 [Lark 开发者后台](https://open.larksuite.com/app) 建一个企业自建应用（比如「Lark Bridge 控制台」）：
+1. 准备一个登录用的 Lark 企业自建应用（可以复用现有的，比如「LibrAI AI 助手控制台」）：
    - 安全设置 → 重定向 URL：`https://<域名>/auth/lark/callback`
-   - 版本管理与发布：可用范围选全部成员（或试点同事），发布
+   - 版本管理与发布：可用范围选全部成员（或试点同事），发布。不在可用范围里的人登录会被 Lark 拒绝（错误码 20010）
 2. 把它的凭证写进 Railway（secret 用 `--stdin`，粘贴后 Ctrl-D）：
 
    ```bash
@@ -89,8 +85,8 @@ railway up --detach
    railway redeploy
    ```
 
-3. 同事打开 `https://<域名>/`，点「用 Lark 登录」，扫码建自己的 bot。他们只看得到、只改得了自己的 bot。
-4. 公司 API key：`railway variable set --stdin ANTHROPIC_API_KEY`。没连自己账号的 bot 都用它（`/status` 显示「公司 API key」）。
+3. 同事打开 `https://<域名>/`，点「用 Lark 登录」→ 扫码建自己的 bot → 在 bot 页面「连接我的 Claude 账号」（见第 6 步）。他们只看得到、只改得了自己的 bot。每人需要自己的 Claude 订阅（公司 Team 的席位，或个人 Pro / Max）。
+4. （可选，默认不用）公司 API key：`railway variable set --stdin ANTHROPIC_API_KEY`。设了之后，没连自己账号的 bot 都用它（`/status` 显示「公司 API key」）。
 
 可选变量：
 

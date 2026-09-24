@@ -67,7 +67,8 @@ export function App() {
           <Card>
             <CardHeader><CardTitle>{me.kind === "user" ? "创建你的 AI 助手" : "初始化 AI 助手"}</CardTitle></CardHeader>
             <CardContent>
-              <OnboardWizard onCreated={() => void refresh()} />
+              {/* Straight to the new bot's page: connecting Claude is the next step there. */}
+              <OnboardWizard onCreated={(profile) => { setSelected(profile); void refresh(); }} />
             </CardContent>
           </Card>
         ) : selected ? (

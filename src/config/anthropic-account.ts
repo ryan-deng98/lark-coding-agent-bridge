@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import type { ClaudeLoginChecker, ClaudeLoginStatus } from '../agent/claude/login-status';
+import type { ClaudeWebLogin, ClaudeWebLoginStarter } from '../agent/claude/web-login';
 import { botUserFor, ensureBotUser, type BotUser } from '../runtime/bot-user';
 import { validateAnthropicApiKey, type AnthropicKeyValidation } from '../utils/anthropic-auth';
 import { resolveAppPaths, type AppPaths } from './app-paths';
@@ -113,6 +114,28 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Start signing a Claude profile's own Claude Code dir in from the console
+ * (Anthropic's `claude auth login`, see startClaudeWebLogin), as the bot's own
+ * user in multi-user mode. Finish with {@link connectClaudeLogin}.
+ */
+export async function openClaudeWebLogin(
+  input: { profile: string },
+  rootDir: string | undefined,
+  start: ClaudeWebLoginStarter,
+): Promise<ClaudeWebLogin> {
+  const appPaths = profilePaths(input.profile, rootDir);
+  const root = await loadRootConfig(appPaths.configFile);
+  assertClaudeProfile(root?.profiles[appPaths.profile], appPaths.profile);
+  // The dir must be the bot's before the bot's login writes into it.
+  const botUser = await ensureBotUser(appPaths);
+  try {
+    return await start(claudeLoginDir(appPaths), { botUser });
+  } catch (err) {
+    throw new AnthropicAccountError(`无法开始 Claude 登录：${errorMessage(err)}`);
+  }
+}
+
 export interface ConnectClaudeLoginDeps {
   checkLogin: ClaudeLoginChecker;
   now?: () => Date;
@@ -143,9 +166,7 @@ export async function connectClaudeLogin(
     throw new AnthropicAccountError(`无法检查 Claude 登录状态：${errorMessage(err)}`);
   }
   if (!status.loggedIn) {
-    throw new AnthropicAccountError(
-      `这个 bot 还没登录 Claude 账号。请先在终端运行：${claudeLoginCommand(claudeConfigDir, botUser)}`,
-    );
+    throw new AnthropicAccountError('这个 bot 还没登录 Claude 账号：请点「连接我的 Claude 账号」，按页面提示登录');
   }
   const anthropic: AnthropicAccountConfig = {
     mode: 'claude-login',

@@ -856,7 +856,11 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
 function anthropicAccountLabel(profile: ProfileConfig): string | undefined {
   if (profile.agentKind !== 'claude') return undefined;
   const account = anthropicAccountView(profile);
-  if (!account.connected) return process.env.ANTHROPIC_API_KEY ? '公司 API key' : '本机 claude 登录';
+  if (!account.connected) {
+    if (process.env.ANTHROPIC_API_KEY) return '公司 API key';
+    // A shared deployment has no host login to fall back on.
+    return botUsersEnabled() ? '未连接（请在控制台连接你的 Claude 账号）' : '本机 claude 登录';
+  }
   if (account.mode === 'claude-login') {
     return account.accountHint ? `Claude 账号登录（${account.accountHint}）` : 'Claude 账号登录';
   }

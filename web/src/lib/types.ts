@@ -39,6 +39,12 @@ export interface Me {
 }
 
 /** A Claude bot's own Anthropic account (never carries the key itself). */
+/** A Claude sign-in started from the page: Anthropic's sign-in address for it. */
+export interface ClaudeLoginAttempt {
+  sessionId: string;
+  url: string;
+}
+
 export interface AnthropicAccount {
   connected: boolean;
   /** "claude-login" = the bot's own Claude Code login; absent = API key. */

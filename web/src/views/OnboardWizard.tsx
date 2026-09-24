@@ -3,6 +3,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { CheckCircle2 } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api";
 import type { AgentKind, OnboardState } from "@/lib/types";
+import { useMe } from "@/lib/me";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,6 +30,7 @@ function uniqueName(base: string, existing: string[]): string {
 }
 
 export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => void }) {
+  const me = useMe();
   const [agentKind, setAgentKind] = useState<AgentKind>("claude");
   const [profileName, setProfileName] = useState("");
   const [anthropicApiKey, setAnthropicApiKey] = useState("");
@@ -110,7 +112,9 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
       });
       setAnthropicApiKey("");
       if (r.warning) toast.warning(r.warning);
-      else toast.success(`profile「${r.profile}」已创建${apiKey ? "，已连接你的 Anthropic 账号" : ""}`);
+      else if (apiKey) toast.success(`profile「${r.profile}」已创建，已连接你的 Anthropic 账号`);
+      else if (agentKind === "claude") toast.success(`「${r.profile}」已创建。下一步：连接你的 Claude 账号`);
+      else toast.success(`profile「${r.profile}」已创建`);
       onCreated(r.profile);
     } catch (e) {
       setPhase("confirm"); // let the user fix the name / retry
@@ -152,7 +156,8 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
             <p className="text-xs text-destructive">已存在同名 profile，请换个名字（不会覆盖现有的）。</p>
           )}
         </div>
-        {agentKind === "claude" && (
+        {/* Colleagues connect their own Claude account on the bot's page instead. */}
+        {agentKind === "claude" && me.admin && (
           <div className="space-y-1.5">
             <Label htmlFor="anthropic-api-key">Anthropic API Key（可选）</Label>
             <Input
