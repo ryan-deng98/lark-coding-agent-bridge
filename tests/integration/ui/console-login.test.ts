@@ -1,16 +1,30 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { createHmac } from 'node:crypto';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig, writeActiveProfile } from '../../../src/config/profile-store';
-import { resolveLoginConfig, type LarkFetch, type LoginConfig } from '../../../src/ui/console-auth';
+import {
+  loadConsoleSessionKey,
+  resolveLoginConfig,
+  type LarkFetch,
+  type LoginConfig,
+} from '../../../src/ui/console-auth';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
 
 const DOMAIN = 'bridge.up.railway.app';
 const TOKEN = 't'.repeat(64);
+const KEYSTORE_SECRET = 'k'.repeat(64);
+const LOGIN_ENV = {
+  LARK_CHANNEL_LOGIN_APP_ID: 'cli_login',
+  LARK_CHANNEL_LOGIN_APP_SECRET: 's'.repeat(32),
+  LARK_CHANNEL_LOGIN_TENANT: 'lark',
+  LARK_CHANNEL_ADMINS: 'on_carol',
+  LARK_CHANNEL_KEYSTORE_SECRET: KEYSTORE_SECRET,
+};
 const app = (id: string) => ({ id, secret: '${APP_SECRET}', tenant: 'lark' as const });
 // Lark people, by the authorization code the fake Lark hands out for them.
 const PEOPLE: Record<string, { union_id: string; name: string }> = {
@@ -115,14 +129,10 @@ beforeEach(async () => {
   await writeActiveProfile(rootDir, 'admin-bot');
   larkCalls = [];
   login = resolveLoginConfig({
-    env: {
-      LARK_CHANNEL_LOGIN_APP_ID: 'cli_login',
-      LARK_CHANNEL_LOGIN_APP_SECRET: 's'.repeat(32),
-      LARK_CHANNEL_LOGIN_TENANT: 'lark',
-      LARK_CHANNEL_ADMINS: 'on_carol',
-      LARK_CHANNEL_KEYSTORE_SECRET: 'k'.repeat(64),
-    },
+    env: LOGIN_ENV,
     publicUrl: `https://${DOMAIN}/`,
+    sessionKey: await loadConsoleSessionKey(rootDir),
+    multiUser: true,
   })!;
   handle = await startUiServer({
     supervisor: supervisor(),
@@ -215,6 +225,52 @@ describe('console sign-in with Lark', () => {
       const list = JSON.parse((await call('/api/profiles', auth)).body);
       expect(list.profiles.map((p: { name: string }) => p.name).sort()).toEqual(['admin-bot', 'alice-bot', 'bob-bot']);
     }
+  });
+
+  it("won't take a session signed with the keystore secret an agent can see", async () => {
+    // What a colleague's bot could compute from its own env before the fix.
+    const key = createHmac('sha256', KEYSTORE_SECRET).update('lark-channel console session v1').digest();
+    const body = Buffer.from(JSON.stringify({ sub: 'on_carol', name: 'Carol', exp: 4102444800 })).toString('base64url');
+    const forged = `${body}.${createHmac('sha256', key).update(body).digest('base64url')}`;
+
+    expect((await call('/api/me', { cookie: `lcb_session=${forged}` })).status).toBe(401);
+  });
+
+  it('keeps the session key in a root-only file that survives restarts', async () => {
+    const again = await loadConsoleSessionKey(rootDir);
+
+    expect(again.equals(login.sessionKey)).toBe(true);
+    expect((await stat(join(rootDir, 'console-session.key'))).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses sign-in unless each bot runs as its own OS user', () => {
+    expect(() =>
+      resolveLoginConfig({ env: LOGIN_ENV, publicUrl: `https://${DOMAIN}/`, sessionKey: login.sessionKey, multiUser: false }),
+    ).toThrow(/multi-user mode/);
+  });
+
+  it('turns away people of another tenant when the tenant is pinned', async () => {
+    await handle.close();
+    handle = await startUiServer({
+      supervisor: supervisor(),
+      version: 'test',
+      rootDir,
+      token: TOKEN,
+      allowedHosts: [DOMAIN],
+      login: { ...login, tenantKey: 'tenant-librai' },
+      larkFetch: async (url, init) => {
+        const res = await fakeLark(url, init);
+        if (!url.endsWith('/user_info')) return res;
+        const json = (await res.json()) as { code: number; data: object };
+        return Response.json({ ...json, data: { ...json.data, tenant_key: 'tenant-elsewhere' } });
+      },
+    });
+    const start = await call('/auth/lark/login');
+    const state = new URL(start.location!).searchParams.get('state')!;
+
+    const done = await call(`/auth/lark/callback?code=code-alice&state=${state}`, { cookie: start.cookies.join('; ') });
+
+    expect(done.location).toBe('/?login_error=failed');
   });
 
   it('rejects a session cookie that was tampered with', async () => {

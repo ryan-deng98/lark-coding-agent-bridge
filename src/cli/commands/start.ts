@@ -49,7 +49,8 @@ import {
 import { resolveProfileRuntime, type ProfileRuntime } from '../../runtime/profile-runtime';
 import { shouldStartConsoleEmpty } from '../../runtime/console-start';
 import { resolveUiExposure, UI_TOKEN_ENV, type UiExposure } from '../../ui/exposure';
-import { resolveLoginConfig } from '../../ui/console-auth';
+import { loadConsoleSessionKey, loginConfigured, resolveLoginConfig } from '../../ui/console-auth';
+import { botUsersEnabled } from '../../runtime/bot-user';
 import { readAutostart } from '../../runtime/autostart';
 import {
   assertReconnectAgentKindUnchanged,
@@ -180,8 +181,14 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   // Fail fast on a bad cloud config (e.g. a public bind host without a token,
   // or half a Lark sign-in setup).
   const exposure = resolveUiExposure();
-  const login = resolveLoginConfig({ publicUrl: exposure.publicUrl });
   const { cfg, configPath, appPaths } = await resolveConsoleStart(opts);
+  const login = loginConfigured()
+    ? resolveLoginConfig({
+        publicUrl: exposure.publicUrl,
+        sessionKey: await loadConsoleSessionKey(appPaths.rootDir),
+        multiUser: botUsersEnabled(),
+      })
+    : undefined;
   configureLogger({ logsDir: appPaths.hostLogsDir });
 
   // One supervisor per machine. If one is already running, print its console

@@ -1,6 +1,9 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import { log } from '../core/logger';
+import { writeFileAtomic } from '../platform/atomic-write';
 import { checkToken } from './http';
 
 /**
@@ -14,14 +17,20 @@ import { checkToken } from './http';
 export const LOGIN_APP_ID_ENV = 'LARK_CHANNEL_LOGIN_APP_ID';
 export const LOGIN_APP_SECRET_ENV = 'LARK_CHANNEL_LOGIN_APP_SECRET';
 export const LOGIN_TENANT_ENV = 'LARK_CHANNEL_LOGIN_TENANT';
+/** Optional: the one Lark tenant (tenant_key) whose people may sign in. */
+export const LOGIN_TENANT_KEY_ENV = 'LARK_CHANNEL_LOGIN_TENANT_KEY';
 export const ADMINS_ENV = 'LARK_CHANNEL_ADMINS';
+/** Signs sessions; root-only in the config root, never in any env an agent sees. */
+const SESSION_KEY_FILE = 'console-session.key';
 export const LOGIN_PATH = '/auth/lark/login';
 export const CALLBACK_PATH = '/auth/lark/callback';
 export const LOGOUT_PATH = '/auth/logout';
 
 const SESSION_COOKIE = 'lcb_session';
 const STATE_COOKIE = 'lcb_oauth';
-const SESSION_TTL_S = 7 * 24 * 3600;
+// Stateless sessions can't be revoked one by one: keep them short (someone who
+// leaves is out within half a day; deleting the key file ends every session).
+const SESSION_TTL_S = 12 * 3600;
 const STATE_TTL_S = 10 * 60;
 const LARK_TIMEOUT_MS = 10_000;
 
@@ -33,6 +42,8 @@ export interface LoginConfig {
   tenant: LoginTenant;
   /** Lark union_ids treated as admins when they sign in. */
   admins: ReadonlySet<string>;
+  /** When set, only people of this tenant may sign in. */
+  tenantKey?: string;
   /** Signs session and OAuth-state cookies. */
   sessionKey: Buffer;
   /** Where Lark sends people back, e.g. https://bridge.up.railway.app/auth/lark/callback */
@@ -51,14 +62,30 @@ export interface LoginEnv {
   env?: NodeJS.ProcessEnv;
   /** The console's public base URL (sign-in only makes sense behind one). */
   publicUrl?: string;
+  /** Signs sessions (see {@link loadConsoleSessionKey}); required once sign-in is configured. */
+  sessionKey?: Buffer;
+  /** Whether each bot runs as its own OS user (botUsersEnabled); sign-in is refused otherwise. */
+  multiUser?: boolean;
+}
+
+/** Whether the environment asks for Lark sign-in at all. */
+export function loginConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[LOGIN_APP_ID_ENV]?.trim() || env[LOGIN_APP_SECRET_ENV]?.trim());
 }
 
 /**
  * Sign-in config from the environment, or undefined when it isn't set up.
- * Half a config (an app id without its secret, no public URL, no keystore
- * secret to sign sessions with) is a startup error rather than a silent no.
+ * Half a config (an app id without its secret, no public URL) is a startup
+ * error rather than a silent no — and so is sign-in without multi-user mode:
+ * colleagues' agents would then run as the bridge's own user, able to read
+ * its session key and sign themselves in as anyone.
  */
-export function resolveLoginConfig({ env = process.env, publicUrl }: LoginEnv = {}): LoginConfig | undefined {
+export function resolveLoginConfig({
+  env = process.env,
+  publicUrl,
+  sessionKey,
+  multiUser = false,
+}: LoginEnv = {}): LoginConfig | undefined {
   const appId = env[LOGIN_APP_ID_ENV]?.trim();
   const appSecret = env[LOGIN_APP_SECRET_ENV]?.trim();
   if (!appId && !appSecret) return undefined;
@@ -66,8 +93,10 @@ export function resolveLoginConfig({ env = process.env, publicUrl }: LoginEnv = 
     throw new Error(`Lark sign-in needs both ${LOGIN_APP_ID_ENV} and ${LOGIN_APP_SECRET_ENV}`);
   }
   if (!publicUrl) throw new Error('Lark sign-in needs the console behind a public domain');
-  const seed = env.LARK_CHANNEL_KEYSTORE_SECRET?.trim();
-  if (!seed) throw new Error('Lark sign-in needs LARK_CHANNEL_KEYSTORE_SECRET to sign sessions');
+  if (!multiUser) {
+    throw new Error('Lark sign-in needs multi-user mode (LARK_CHANNEL_BOT_USERS=1, bridge running as root)');
+  }
+  if (!sessionKey || sessionKey.length < 32) throw new Error('Lark sign-in needs a session key');
   const tenantRaw = env[LOGIN_TENANT_ENV]?.trim() || 'feishu';
   if (tenantRaw !== 'lark' && tenantRaw !== 'feishu') {
     throw new Error(`${LOGIN_TENANT_ENV} must be lark or feishu, got "${tenantRaw}"`);
@@ -78,14 +107,35 @@ export function resolveLoginConfig({ env = process.env, publicUrl }: LoginEnv = 
       .map((id) => id.trim())
       .filter(Boolean),
   );
+  const tenantKey = env[LOGIN_TENANT_KEY_ENV]?.trim();
   return {
     appId,
     appSecret,
     tenant: tenantRaw,
     admins,
-    sessionKey: createHmac('sha256', seed).update('lark-channel console session v1').digest(),
+    ...(tenantKey ? { tenantKey } : {}),
+    sessionKey,
     redirectUri: new URL(CALLBACK_PATH, publicUrl).toString(),
   };
+}
+
+/**
+ * The key that signs console sessions: random, kept root-only (0600) in the
+ * config root and created on first use. Never derived from anything in the
+ * env, since agents inherit the bridge's env (minus BRIDGE_ONLY_ENV).
+ */
+export async function loadConsoleSessionKey(rootDir: string): Promise<Buffer> {
+  const file = join(rootDir, SESSION_KEY_FILE);
+  try {
+    const key = await readFile(file);
+    if (key.length >= 32) return key;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const key = randomBytes(32);
+  await mkdir(rootDir, { recursive: true });
+  await writeFileAtomic(file, key, { mode: 0o600 });
+  return key;
 }
 
 /** Who is calling: the console token (admin), a signed-in person, or nobody. */
@@ -141,13 +191,18 @@ export async function finishLogin(
   try {
     const accessToken = await exchangeCode(login, code, pending.verifier, fetchImpl);
     const person = await fetchPerson(login, accessToken, fetchImpl);
+    // The login app is the company's own (only its people can consent), but pin
+    // the tenant too when told which it is.
+    if (login.tenantKey && person.tenantKey !== login.tenantKey) {
+      throw new Error(`sign-in from another tenant (…${(person.tenantKey ?? '').slice(-6)})`);
+    }
     setCookie(
       res,
       SESSION_COOKIE,
       sign({ sub: person.unionId, name: person.name }, login.sessionKey, SESSION_TTL_S),
       SESSION_TTL_S,
     );
-    log.info('ui', 'console-login', { user: person.unionId.slice(-6) });
+    log.info('ui', 'console-login', { user: person.unionId.slice(-6), tenant: (person.tenantKey ?? '').slice(-6) });
     redirect(res, '/');
   } catch (err) {
     log.warn('ui', 'console-login-failed', { err: err instanceof Error ? err.message : String(err) });
@@ -185,7 +240,7 @@ async function fetchPerson(
   login: LoginConfig,
   accessToken: string,
   fetchImpl: LarkFetch,
-): Promise<{ unionId: string; name: string }> {
+): Promise<{ unionId: string; name: string; tenantKey?: string }> {
   const res = await fetchImpl(`https://${domains(login.tenant).open}/open-apis/authen/v1/user_info`, {
     method: 'GET',
     headers: { authorization: `Bearer ${accessToken}` },
@@ -193,11 +248,15 @@ async function fetchPerson(
   });
   const json = (await res.json().catch(() => ({}))) as {
     code?: number;
-    data?: { union_id?: string; name?: string };
+    data?: { union_id?: string; name?: string; tenant_key?: string };
   };
   const unionId = json.data?.union_id;
   if (json.code !== 0 || !unionId) throw new Error(`user_info failed: code ${json.code ?? res.status}`);
-  return { unionId, name: json.data?.name || unionId };
+  return {
+    unionId,
+    name: json.data?.name || unionId,
+    ...(json.data?.tenant_key ? { tenantKey: json.data.tenant_key } : {}),
+  };
 }
 
 function domains(tenant: LoginTenant): { accounts: string; open: string } {
