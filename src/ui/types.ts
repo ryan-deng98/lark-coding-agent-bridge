@@ -1,6 +1,7 @@
 import type { LarkChannel } from '@larksuite/channel';
 import type { KnownChat } from '../bot/lark-info';
 import type { ClaudeLoginChecker } from '../agent/claude/login-status';
+import type { LarkFetch, LoginConfig } from './console-auth';
 import type { AnthropicKeyValidator } from '../config/anthropic-account';
 import type { MutableProfileState } from '../config/config-ops';
 import type { Controls } from '../commands';
@@ -45,6 +46,10 @@ export interface UiServerDeps {
   token?: string;
   /** Hostnames accepted in Host/Origin besides localhost (a deployment's public domain). */
   allowedHosts?: string[];
+  /** Per-person "Sign in with Lark" for a shared console; off when undefined. */
+  login?: LoginConfig;
+  /** Calls to Lark's OAuth endpoints; defaults to fetch. Injected by tests. */
+  larkFetch?: LarkFetch;
   /** Anthropic key check; defaults to a live `GET /v1/models`. Injected by tests. */
   validateAnthropicApiKey?: AnthropicKeyValidator;
   /** Claude login check; defaults to `claude auth status`. Injected by tests. */

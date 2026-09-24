@@ -36,8 +36,25 @@ export async function api<T = unknown>(path: string, opts: RequestInit = {}): Pr
     },
   });
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) throw new Error((data.error as string) || `HTTP ${res.status}`);
+  if (!res.ok) {
+    throw new ApiError(
+      (data.error as string) || `HTTP ${res.status}`,
+      res.status,
+      typeof data.login === "string" ? data.login : undefined,
+    );
+  }
   return data as T;
+}
+
+/** A failed console call; `login` is where to sign in when the session is missing. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly login?: string,
+  ) {
+    super(message);
+  }
 }
 
 export const apiGet = <T = unknown>(path: string) => api<T>(path);

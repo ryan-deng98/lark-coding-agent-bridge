@@ -856,7 +856,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
 function anthropicAccountLabel(profile: ProfileConfig): string | undefined {
   if (profile.agentKind !== 'claude') return undefined;
   const account = anthropicAccountView(profile);
-  if (!account.connected) return '本机 claude 登录';
+  if (!account.connected) return process.env.ANTHROPIC_API_KEY ? '公司 API key' : '本机 claude 登录';
   if (account.mode === 'claude-login') {
     return account.accountHint ? `Claude 账号登录（${account.accountHint}）` : 'Claude 账号登录';
   }

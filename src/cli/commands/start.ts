@@ -49,6 +49,8 @@ import {
 import { resolveProfileRuntime, type ProfileRuntime } from '../../runtime/profile-runtime';
 import { shouldStartConsoleEmpty } from '../../runtime/console-start';
 import { resolveUiExposure, UI_TOKEN_ENV, type UiExposure } from '../../ui/exposure';
+import { resolveLoginConfig } from '../../ui/console-auth';
+import { readAutostart } from '../../runtime/autostart';
 import {
   assertReconnectAgentKindUnchanged,
   checkRuntimeAgentAvailability,
@@ -175,8 +177,10 @@ async function runClassic(opts: StartOptions): Promise<void> {
  * running control plane and prints its URL instead of launching a duplicate.
  */
 async function runSupervisorConsole(opts: StartOptions): Promise<void> {
-  // Fail fast on a bad cloud config (e.g. a public bind host without a token).
+  // Fail fast on a bad cloud config (e.g. a public bind host without a token,
+  // or half a Lark sign-in setup).
   const exposure = resolveUiExposure();
+  const login = resolveLoginConfig({ publicUrl: exposure.publicUrl });
   const { cfg, configPath, appPaths } = await resolveConsoleStart(opts);
   configureLogger({ logsDir: appPaths.hostLogsDir });
 
@@ -214,6 +218,7 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
       port: exposure.port,
       token: exposure.token,
       allowedHosts: exposure.allowedHosts,
+      ...(login ? { login } : {}),
     });
     await writeUiSidecar(appPaths.hostUiFile, uiServer, new Date().toISOString());
     console.log(`✓ 控制台：${consoleLink(uiServer, exposure)}`);
@@ -229,7 +234,8 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
     return;
   }
 
-  // Auto-start only the active profile; others start on demand from the console.
+  // Auto-start the active profile, then every bot someone started from the
+  // console and hasn't stopped (in a shared deployment, everyone's bot).
   try {
     await supervisor.startProfile(appPaths.profile);
     console.log(`✓ profile「${appPaths.profile}」已上线`);
@@ -238,6 +244,15 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
       `⚠️ active profile「${appPaths.profile}」启动失败：${err instanceof Error ? err.message : String(err)}`,
     );
     log.warn('supervisor', 'active-start-failed', { profile: appPaths.profile, err: String(err) });
+  }
+  for (const profile of await readAutostart(appPaths.rootDir)) {
+    if (profile === appPaths.profile) continue;
+    try {
+      await supervisor.startProfile(profile);
+      console.log(`✓ profile「${profile}」已上线`);
+    } catch (err) {
+      log.warn('supervisor', 'autostart-failed', { profile, err: String(err) });
+    }
   }
 
   await parkWithShutdown(supervisor, appPaths, uiServer, hostLock);

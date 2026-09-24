@@ -310,6 +310,7 @@ describe('ui server anthropic account routes', () => {
     expect(await json(await get('/api/anthropic?profile=claude', handle.token))).toEqual({
       connected: false,
       loginCommand: `CLAUDE_CONFIG_DIR='${loginDir}' claude auth login`,
+      companyKey: Boolean(process.env.ANTHROPIC_API_KEY),
     });
 
     const res = await post('/api/anthropic/connect-login', handle.token, { profile: 'claude' });

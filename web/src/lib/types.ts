@@ -30,6 +30,14 @@ export interface ProfileInfo {
   running: boolean;
 }
 
+/** Who is using the console: the console token, or a person signed in with Lark. */
+export interface Me {
+  kind: "token" | "user";
+  id?: string;
+  name?: string;
+  admin: boolean;
+}
+
 /** A Claude bot's own Anthropic account (never carries the key itself). */
 export interface AnthropicAccount {
   connected: boolean;
@@ -40,6 +48,8 @@ export interface AnthropicAccount {
   connectedAt?: string;
   /** The command that signs this bot's own Claude Code dir in. */
   loginCommand?: string;
+  /** The deployment has a company API key that bots without their own account use. */
+  companyKey?: boolean;
   /** Set on connect/disconnect: whether the running bot was restarted onto it. */
   restarted?: boolean;
   restartError?: string;

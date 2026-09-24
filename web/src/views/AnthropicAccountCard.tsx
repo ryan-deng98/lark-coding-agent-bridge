@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Copy, KeyRound } from "lucide-react";
 import { apiGet, apiPost } from "@/lib/api";
 import type { AnthropicAccount } from "@/lib/types";
+import { useMe } from "@/lib/me";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,8 +19,11 @@ type Busy = "connect" | "disconnect" | null;
 //  - API key: pasted once, kept in the profile's encrypted keystore; this page
 //    only ever sees a masked hint.
 export function AnthropicAccountCard({ profile }: { profile: string }) {
+  const me = useMe();
+  // A Claude login is run over SSH in the container: an admin's job, not a colleague's.
+  const methods: readonly Method[] = me.admin ? ["claude-login", "api-key"] : ["api-key"];
   const [account, setAccount] = useState<AnthropicAccount | null>(null);
-  const [method, setMethod] = useState<Method>("claude-login");
+  const [method, setMethod] = useState<Method>(methods[0] ?? "api-key");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
 
@@ -27,7 +31,7 @@ export function AnthropicAccountCard({ profile }: { profile: string }) {
     try {
       const a = await apiGet<AnthropicAccount>(`/api/anthropic?profile=${encodeURIComponent(profile)}`);
       setAccount(a);
-      if (a.connected) setMethod(a.mode === "claude-login" ? "claude-login" : "api-key");
+      if (a.connected && me.admin) setMethod(a.mode === "claude-login" ? "claude-login" : "api-key");
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
     }
@@ -64,7 +68,11 @@ export function AnthropicAccountCard({ profile }: { profile: string }) {
 
   const connected = account?.connected === true;
   const status = !connected
-    ? "未连接：这个 bot 用本机 claude 的登录。"
+    ? account?.companyKey
+      ? "没连接自己的账号：这个 bot 用公司的 API key。"
+      : me.admin
+        ? "未连接：这个 bot 用本机 claude 的登录。"
+        : "还没有可用的 Claude 账号：在下面填你自己的 API key，或请管理员配置公司 API key。"
     : account?.mode === "claude-login"
       ? `这个 bot 用它自己的 Claude 账号登录${account.accountHint ? `（${account.accountHint}）` : ""}。`
       : `这个 bot 用你的 API key ${account?.keyHint ?? ""} 调用 Claude。`;
@@ -75,12 +83,16 @@ export function AnthropicAccountCard({ profile }: { profile: string }) {
         <CardTitle className="flex items-center gap-2">
           <KeyRound className="size-4" /> Anthropic 账号
         </CardTitle>
-        {connected ? <Badge variant="success">已连接</Badge> : <Badge variant="outline">本机 claude 登录</Badge>}
+        {connected ? (
+          <Badge variant="success">已连接</Badge>
+        ) : (
+          <Badge variant="outline">{account?.companyKey ? "公司 API key" : me.admin ? "本机 claude 登录" : "未连接"}</Badge>
+        )}
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">{status}</p>
         <div className="flex gap-2" role="tablist" aria-label="连接方式">
-          {(["claude-login", "api-key"] as const).map((m) => (
+          {methods.map((m) => (
             <Button
               key={m}
               role="tab"

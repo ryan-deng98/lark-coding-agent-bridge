@@ -9,7 +9,7 @@ import {
   withConfigFileLock,
   writeActiveProfile,
 } from '../config/profile-store';
-import type { AgentKind } from '../config/profile-schema';
+import type { AgentKind, ConsoleOwner } from '../config/profile-schema';
 import { secretKeyForApp, type AppConfig, type TenantBrand } from '../config/schema';
 import { buildEncryptedAccountConfig } from '../config/store';
 import { createBootstrapProfileConfig } from '../cli/profile-bootstrap';
@@ -66,6 +66,11 @@ export interface CreateProfileInput {
   appSecret: string;
   tenant: TenantBrand;
   workspace?: string;
+  /**
+   * The console user creating it (shared deployment). Their bot is theirs to
+   * see; it doesn't become the deployment's active profile, which is the admin's.
+   */
+  owner?: ConsoleOwner;
 }
 
 /**
@@ -75,7 +80,7 @@ export interface CreateProfileInput {
  * `run`/`start` produce identical on-disk config. The App Secret is stored only
  * in the encrypted keystore; config.json gets a SecretRef.
  */
-export async function onboardCreate(body: unknown, rootDir?: string) {
+export async function onboardCreate(body: unknown, rootDir?: string, opts: { owner?: ConsoleOwner } = {}) {
   const fv = asRecord(body);
   const agentKind: AgentKind = fv.agentKind === 'codex' ? 'codex' : 'claude';
   const input: CreateProfileInput = {
@@ -85,6 +90,7 @@ export async function onboardCreate(body: unknown, rootDir?: string) {
     appSecret: String(fv.appSecret ?? '').trim(),
     tenant: readTenant(fv.tenant),
     ...(typeof fv.workspace === 'string' && fv.workspace.trim() ? { workspace: fv.workspace.trim() } : {}),
+    ...(opts.owner ? { owner: opts.owner } : {}),
   };
   if (!input.appId || !input.appSecret) throw new HttpError(400, 'appId 和 appSecret 必填');
 
@@ -142,6 +148,7 @@ export async function writeNewProfile(
   } catch (err) {
     throw new HttpError(400, err instanceof Error ? err.message : String(err));
   }
+  if (input.owner) profileConfig = { ...profileConfig, consoleOwner: input.owner };
 
   await withConfigFileLock(appPaths.configFile, async () => {
     const root = await loadRootConfig(appPaths.configFile);
@@ -156,7 +163,7 @@ export async function writeNewProfile(
     if (!root.secrets && encrypted.secrets) root.secrets = encrypted.secrets;
     await saveRootConfig(root, appPaths.configFile);
   });
-  await writeActiveProfile(appPaths.rootDir, profile);
+  if (!input.owner) await writeActiveProfile(appPaths.rootDir, profile);
 
   return { profile };
 }

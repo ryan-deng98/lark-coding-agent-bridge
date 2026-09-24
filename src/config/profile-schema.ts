@@ -177,6 +177,12 @@ export function claudeLoginConfigDir(
     : undefined;
 }
 
+/** The console user who created a bot (their Lark union_id, stable across one tenant's apps). */
+export interface ConsoleOwner {
+  id: string;
+  name?: string;
+}
+
 export interface ProfileConfig {
   schemaVersion: 2;
   agentKind: AgentKind;
@@ -186,6 +192,8 @@ export interface ProfileConfig {
     app: AppCredentials;
   };
   anthropic?: AnthropicAccountConfig;
+  /** Who created the bot from the console; in a shared deployment only they (and admins) see it. */
+  consoleOwner?: ConsoleOwner;
   secrets?: SecretsConfig;
   preferences: Omit<AppPreferences, 'access' | 'requireMentionInGroup'>;
   access: ProfileAccess;
@@ -280,6 +288,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     meeting?: unknown;
     larkCli?: unknown;
     anthropic?: unknown;
+    consoleOwner?: unknown;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -308,6 +317,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const meeting = normalizeMeeting(raw.meeting);
   const larkCli = normalizeLarkCli(raw.larkCli);
   const anthropic = normalizeAnthropicAccount(raw.anthropic);
+  const consoleOwner = normalizeConsoleOwner(raw.consoleOwner);
 
   return {
     schemaVersion: 2,
@@ -315,6 +325,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     mode: raw.mode === 'team' ? 'team' : 'personal',
     accounts,
     ...(anthropic ? { anthropic } : {}),
+    ...(consoleOwner ? { consoleOwner } : {}),
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     access,
@@ -432,6 +443,15 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
 
 function normalizeComments(_input: unknown): CommentConfig {
   return {};
+}
+
+function normalizeConsoleOwner(input: unknown): ConsoleOwner | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const id = nonEmptyString(raw.id);
+  if (!id) return undefined;
+  const name = nonEmptyString(raw.name);
+  return { id, ...(name ? { name } : {}) };
 }
 
 function normalizeAnthropicAccount(input: unknown): AnthropicAccountConfig | undefined {

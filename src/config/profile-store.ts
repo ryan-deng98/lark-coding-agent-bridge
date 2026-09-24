@@ -52,6 +52,7 @@ type StoredProfileConfig = Pick<
   | 'mode'
   | 'accounts'
   | 'anthropic'
+  | 'consoleOwner'
   | 'secrets'
   | 'preferences'
   | 'access'
@@ -92,6 +93,7 @@ function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
     mode: profile.mode,
     accounts: profile.accounts,
     ...(profile.anthropic ? { anthropic: profile.anthropic } : {}),
+    ...(profile.consoleOwner ? { consoleOwner: profile.consoleOwner } : {}),
     ...(profile.secrets ? { secrets: profile.secrets } : {}),
     preferences: profile.preferences,
     access: profile.access,

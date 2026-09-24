@@ -10,7 +10,7 @@ import {
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig } from '../config/profile-store';
 import type { TenantBrand } from '../config/schema';
-import type { AgentKind } from '../config/profile-schema';
+import type { AgentKind, ConsoleOwner } from '../config/profile-schema';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import { log } from '../core/logger';
 import { HttpError } from './http';
@@ -161,7 +161,7 @@ export interface QrFinishResult {
 export async function finishQrRegistration(
   body: unknown,
   rootDir?: string,
-  deps: { validateAnthropicApiKey?: AnthropicKeyValidator } = {},
+  deps: { validateAnthropicApiKey?: AnthropicKeyValidator; owner?: ConsoleOwner } = {},
 ): Promise<QrFinishResult> {
   const fv = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   const sessionId = String(fv.sessionId ?? '');
@@ -178,7 +178,14 @@ export async function finishQrRegistration(
     agentKind === 'claude' && rawKey ? await checkKeyOrBadRequest(rawKey, deps.validateAnthropicApiKey) : undefined;
 
   const created = await writeNewProfile(
-    { profile, agentKind, appId: s.app.appId, appSecret: s.app.appSecret, tenant: s.app.tenant },
+    {
+      profile,
+      agentKind,
+      appId: s.app.appId,
+      appSecret: s.app.appSecret,
+      tenant: s.app.tenant,
+      ...(deps.owner ? { owner: deps.owner } : {}),
+    },
     rootDir,
   );
   s.status = 'done';
