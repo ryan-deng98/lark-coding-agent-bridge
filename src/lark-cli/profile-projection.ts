@@ -1,5 +1,6 @@
 import { chmod, mkdir } from 'node:fs/promises';
 import type { AppPaths } from '../config/app-paths';
+import { KEYSTORE_SECRET_ENV } from '../config/keystore';
 import type { AppConfig, ProviderConfig, SecretRef, SecretsConfig } from '../config/schema';
 import { isSecretRef } from '../config/schema';
 import { ensureSecretsGetterWrapper } from '../config/store';
@@ -58,6 +59,10 @@ async function buildProjectionSecrets(
         LARK_CHANNEL_HOME: appPaths.rootDir,
         LARK_CHANNEL_PROFILE: appPaths.profile,
       },
+      // Exec providers run with a clean env. Where the keystore key comes from
+      // this variable (a container), the getter needs it to decrypt; pass it by
+      // name so the secret itself is never written into this file.
+      passEnv: [...new Set([...(existing?.passEnv ?? []), KEYSTORE_SECRET_ENV])],
     };
   }
 
