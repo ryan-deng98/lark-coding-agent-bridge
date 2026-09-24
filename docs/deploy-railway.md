@@ -72,7 +72,7 @@ railway up --detach
 ## 运维
 
 - 日志：`railway logs`
-- 升级 Claude Code：改 `Dockerfile` 里的 `CLAUDE_CODE_VERSION`，重新部署
+- 升级 Claude Code / lark-cli：改 `Dockerfile` 里的 `CLAUDE_CODE_VERSION` / `LARK_CLI_VERSION`，重新部署
 - 备份：Railway 的 volume Backups
 - `railway.toml`（Config as Code）Railway 只支持到 2026-12-01，之前要迁到 `.railway/railway.ts`（`railway config migrate`）
 

@@ -22,12 +22,14 @@ RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
 # ---- runtime ----
 FROM ${NODE_IMAGE}
-# Pinned so a redeploy never silently changes the agent under the bots.
+# Pinned so a redeploy never silently changes the agent or its tools under the bots.
+# lark-cli lets the agent send cards and use the Lark APIs (calendar, docs, tasks...).
 ARG CLAUDE_CODE_VERSION=2.1.280
+ARG LARK_CLI_VERSION=1.0.96
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl git procps tini \
   && rm -rf /var/lib/apt/lists/* \
-  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+  && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@larksuite/cli@${LARK_CLI_VERSION}" \
   && npm cache clean --force
 
 WORKDIR /app
