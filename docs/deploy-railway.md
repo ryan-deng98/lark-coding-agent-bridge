@@ -76,10 +76,36 @@ railway up --detach
 - 备份：Railway 的 volume Backups
 - `railway.toml`（Config as Code）Railway 只支持到 2026-12-01，之前要迁到 `.railway/railway.ts`（`railway config migrate`）
 
+## 7. 让同事自助使用（Lark 登录）
+
+1. 在 [Lark 开发者后台](https://open.larksuite.com/app) 建一个企业自建应用（比如「Lark Bridge 控制台」）：
+   - 安全设置 → 重定向 URL：`https://<域名>/auth/lark/callback`
+   - 版本管理与发布：可用范围选全部成员（或试点同事），发布
+2. 把它的凭证写进 Railway（secret 用 `--stdin`，粘贴后 Ctrl-D）：
+
+   ```bash
+   railway variable set LARK_CHANNEL_LOGIN_APP_ID=<App ID> LARK_CHANNEL_LOGIN_TENANT=lark --skip-deploys
+   railway variable set --stdin LARK_CHANNEL_LOGIN_APP_SECRET --skip-deploys
+   railway redeploy
+   ```
+
+3. 同事打开 `https://<域名>/`，点「用 Lark 登录」，扫码建自己的 bot。他们只看得到、只改得了自己的 bot。
+4. 公司 API key：`railway variable set --stdin ANTHROPIC_API_KEY`。没连自己账号的 bot 都用它（`/status` 显示「公司 API key」）。
+
+可选变量：
+
+| 变量 | 作用 |
+|---|---|
+| `LARK_CHANNEL_ADMINS` | 逗号分隔的 union_id，这些人用 Lark 登录后也是管理员（能看全部 bot） |
+| `LARK_CHANNEL_LOGIN_TENANT_KEY` | 只允许这个租户的人登录（登录日志里有 tenant 尾号） |
+
 ## 安全须知
 
-- 控制台 token 等于所有 bot 的管理权：能创建 bot、改配置，而 bot 能在容器里执行命令。
-- bot 在容器里以 `bypassPermissions` 运行（容器就是沙箱：root 用户，`IS_SANDBOX=1`）。所有 bot 在同一个容器里，彼此能读到对方的工作区和登录凭据。给全公司自助使用之前，需要按人登录控制台、按人隔离容器（下一阶段）。
+- 控制台 token 和 `LARK_CHANNEL_ADMINS` 里的人是管理员，能管理所有 bot。
+- 每个 bot 用自己的系统用户运行（`LARK_CHANNEL_BOT_USERS=1`，uid 从 20001 起）：读不到别人的工作区、Claude 登录、lark-cli 凭证和 App Secret，也读不到 bridge 的配置、控制台 token 和会话密钥。bridge 本身是 root，只负责分配用户和整理文件权限。
+- bot 仍以 `bypassPermissions` 运行，能在自己的目录里随意执行命令；公司 API key 在每个 bot 的环境里，任何一个同事的 bot 都能读到它。
+- 登录会话 12 小时有效，签名密钥在 `/data/lark-channel/console-session.key`（只有 root 可读）。要立刻踢掉所有人：删掉这个文件后 `railway restart`。
+- `/ps`、`/exit` 在多人模式下禁用（它们能看到、关掉别人的 bot）。
 
 ## 本地用 Docker 试跑
 
