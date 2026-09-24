@@ -49,7 +49,12 @@ import {
 import { resolveProfileRuntime, type ProfileRuntime } from '../../runtime/profile-runtime';
 import { shouldStartConsoleEmpty } from '../../runtime/console-start';
 import { resolveUiExposure, UI_TOKEN_ENV, type UiExposure } from '../../ui/exposure';
-import { loadConsoleSessionKey, loginConfigured, resolveLoginConfig } from '../../ui/console-auth';
+import {
+  loadConsoleSessionKey,
+  loginConfigured,
+  resolveLoginConfig,
+  type LoginConfig,
+} from '../../ui/console-auth';
 import { botUsersEnabled } from '../../runtime/bot-user';
 import { readAutostart } from '../../runtime/autostart';
 import {
@@ -182,13 +187,7 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   // or half a Lark sign-in setup).
   const exposure = resolveUiExposure();
   const { cfg, configPath, appPaths } = await resolveConsoleStart(opts);
-  const login = loginConfigured()
-    ? resolveLoginConfig({
-        publicUrl: exposure.publicUrl,
-        sessionKey: await loadConsoleSessionKey(appPaths.rootDir),
-        multiUser: botUsersEnabled(),
-      })
-    : undefined;
+  const login = await consoleLogin(appPaths.rootDir, exposure);
   configureLogger({ logsDir: appPaths.hostLogsDir });
 
   // One supervisor per machine. If one is already running, print its console
@@ -263,6 +262,27 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   }
 
   await parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
+}
+
+/**
+ * Lark sign-in for the console, when configured. A half-done setup (say, the
+ * app id set but not yet its secret) leaves sign-in off with a loud warning
+ * instead of failing the start: the bots keep running, admins keep the token.
+ */
+async function consoleLogin(rootDir: string, exposure: UiExposure): Promise<LoginConfig | undefined> {
+  if (!loginConfigured()) return undefined;
+  try {
+    return resolveLoginConfig({
+      publicUrl: exposure.publicUrl,
+      sessionKey: await loadConsoleSessionKey(rootDir),
+      multiUser: botUsersEnabled(),
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`⚠️ Lark 登录未启用：${reason}`);
+    log.warn('ui', 'console-login-disabled', { reason });
+    return undefined;
+  }
 }
 
 interface ConsoleStart {
